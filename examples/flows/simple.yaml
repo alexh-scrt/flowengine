@@ -1,0 +1,30 @@
+# Simple Greeting Flow
+# Demonstrates basic sequential flow execution
+
+name: "Simple Greeting Flow"
+version: "1.0"
+description: "A simple flow that greets and shouts"
+
+components:
+  - name: greeter
+    type: examples.simple_flow.GreetComponent
+    config:
+      greeting: "Hello"
+
+  - name: shouter
+    type: examples.simple_flow.ShoutComponent
+    config: {}
+
+flow:
+  type: sequential
+
+  settings:
+    fail_fast: true
+    timeout_seconds: 30
+
+  steps:
+    - component: greeter
+      description: "Generate a greeting message"
+
+    - component: shouter
+      description: "Convert message to uppercase"

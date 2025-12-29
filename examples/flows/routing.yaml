@@ -1,0 +1,56 @@
+# Request Routing Flow (First-Match Branching)
+# Demonstrates conditional flow type with switch/case semantics
+#
+# Flow type: "conditional"
+#   - First-match branching (like switch/case)
+#   - Stops after the FIRST step whose condition is True
+#   - Only ONE step executes
+#   - Useful for routing, dispatch, or mutually exclusive branches
+
+name: "Request Router"
+version: "1.0"
+description: "Routes requests to appropriate handler based on type"
+
+components:
+  - name: handle_user_request
+    type: examples.routing_flow.UserRequestHandler
+    config: {}
+
+  - name: handle_order_request
+    type: examples.routing_flow.OrderRequestHandler
+    config: {}
+
+  - name: handle_admin_request
+    type: examples.routing_flow.AdminRequestHandler
+    config: {}
+
+  - name: handle_unknown_request
+    type: examples.routing_flow.UnknownRequestHandler
+    config: {}
+
+flow:
+  type: conditional  # First-match branching - stops after first match
+
+  settings:
+    fail_fast: true
+    timeout_seconds: 30
+
+  steps:
+    # Route to user handler
+    - component: handle_user_request
+      description: "Handle user-related requests"
+      condition: "context.data.request_type == 'user'"
+
+    # Route to order handler
+    - component: handle_order_request
+      description: "Handle order-related requests"
+      condition: "context.data.request_type == 'order'"
+
+    # Route to admin handler
+    - component: handle_admin_request
+      description: "Handle admin requests"
+      condition: "context.data.request_type == 'admin'"
+
+    # Default fallback (no condition = always matches if reached)
+    - component: handle_unknown_request
+      description: "Handle unknown request types"

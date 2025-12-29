@@ -1,0 +1,124 @@
+# Data Pipeline Flow
+# A comprehensive example demonstrating all FlowEngine features
+
+name: "Data Processing Pipeline"
+version: "2.0"
+description: |
+  A complete data processing pipeline that:
+  - Fetches data from a source
+  - Validates the data
+  - Transforms valid data
+  - Saves results
+  - Handles errors gracefully
+
+components:
+  # Data fetcher with configuration
+  - name: fetcher
+    type: myapp.components.FetchComponent
+    config:
+      source: "https://api.example.com/data"
+      timeout: 30
+      retry_count: 3
+
+  # Schema validator
+  - name: validator
+    type: myapp.components.ValidatorComponent
+    config:
+      schema: "schemas/data_schema.json"
+      strict: true
+      allow_extra_fields: false
+
+  # Data transformer
+  - name: transformer
+    type: myapp.components.TransformComponent
+    config:
+      operations:
+        - type: normalize
+          fields: ["name", "email"]
+        - type: deduplicate
+          key: "id"
+        - type: sort
+          by: "created_at"
+          order: "desc"
+
+  # Data enricher (adds additional info)
+  - name: enricher
+    type: myapp.components.EnrichComponent
+    config:
+      lookup_service: "https://lookup.example.com"
+      fields_to_enrich:
+        - field: "user_id"
+          lookup: "users"
+          target: "user_details"
+
+  # Result saver
+  - name: saver
+    type: myapp.components.SaveComponent
+    config:
+      destination: "database"
+      table: "processed_data"
+      mode: "upsert"
+      batch_size: 100
+
+  # Debug logger
+  - name: logger
+    type: flowengine.contrib.logging.LoggingComponent
+    config:
+      level: "debug"
+      message: "Pipeline state"
+      log_data: true
+      log_metadata: true
+
+  # Error handler
+  - name: error_handler
+    type: myapp.components.ErrorHandlerComponent
+    config:
+      notification_channel: "slack"
+      severity: "warning"
+
+flow:
+  type: conditional
+
+  settings:
+    fail_fast: false
+    timeout_seconds: 300
+
+  steps:
+    # Step 1: Fetch data
+    - component: fetcher
+      description: "Fetch data from source API"
+      on_error: fail
+
+    # Step 2: Debug log after fetch
+    - component: logger
+      description: "Log fetched data"
+      condition: "context.data.fetcher is not None"
+
+    # Step 3: Validate data (only if fetch succeeded)
+    - component: validator
+      description: "Validate fetched data against schema"
+      condition: "context.data.fetcher.status == 'success'"
+      on_error: continue
+
+    # Step 4: Transform valid data
+    - component: transformer
+      description: "Transform and normalize data"
+      condition: |
+        context.data.validator is not None and
+        context.data.validator.valid == True
+
+    # Step 5: Enrich data with additional info
+    - component: enricher
+      description: "Enrich data with lookup values"
+      condition: "context.data.transformer is not None"
+      on_error: skip
+
+    # Step 6: Save processed data
+    - component: saver
+      description: "Save processed data to database"
+      condition: "context.data.transformer is not None"
+
+    # Step 7: Handle any errors that occurred
+    - component: error_handler
+      description: "Handle and report any errors"
+      condition: "context.metadata.errors is not None"

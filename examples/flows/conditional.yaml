@@ -1,0 +1,57 @@
+# Sequential Data Processing Flow with Conditional Steps
+# Demonstrates sequential flow where each step has its own condition
+#
+# Flow type: "sequential" (default)
+#   - Runs all steps in order
+#   - Each step's condition guards whether IT runs
+#   - All matching steps execute
+#
+# Use "conditional" flow type for first-match branching (switch/case semantics)
+
+name: "Conditional Data Flow"
+version: "1.0"
+description: "Fetches data and processes conditionally based on results"
+
+components:
+  - name: fetch_data
+    type: examples.conditional_flow.FetchDataComponent
+    config: {}
+
+  - name: transform_data
+    type: examples.conditional_flow.TransformDataComponent
+    config: {}
+
+  - name: save_data
+    type: examples.conditional_flow.SaveDataComponent
+    config: {}
+
+  - name: notify_error
+    type: examples.conditional_flow.NotifyErrorComponent
+    config: {}
+
+flow:
+  type: sequential  # All steps evaluated in order
+
+  settings:
+    fail_fast: false
+    timeout_seconds: 60
+
+  steps:
+    # Always fetch data first (no condition = always runs)
+    - component: fetch_data
+      description: "Fetch data from API"
+
+    # Only transform if fetch was successful
+    - component: transform_data
+      description: "Transform the fetched data"
+      condition: "context.data.fetch_result.status == 'success'"
+
+    # Only save if we have transformed data
+    - component: save_data
+      description: "Save transformed data"
+      condition: "context.data.transformed_users is not None"
+
+    # Only notify on error
+    - component: notify_error
+      description: "Send error notification"
+      condition: "context.data.fetch_result.status == 'error'"
