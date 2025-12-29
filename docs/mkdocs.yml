@@ -1,0 +1,100 @@
+site_name: FlowEngine
+site_description: Lightweight YAML-driven state machine for Python
+site_url: https://flowengine.readthedocs.io
+repo_url: https://github.com/yourorg/flowengine
+repo_name: yourorg/flowengine
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: orange
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: orange
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - content.code.copy
+    - content.code.annotate
+    - search.highlight
+    - search.suggest
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+            show_root_full_path: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            members_order: source
+            merge_init_into_class: true
+            separate_signature: true
+            show_signature_annotations: true
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Quick Start: quickstart.md
+  - User Guide:
+    - Components: user-guide/components.md
+    - Flows: user-guide/flows.md
+    - Context: user-guide/context.md
+    - Conditions: user-guide/conditions.md
+    - Timeout Modes: user-guide/timeout-modes.md
+    - Error Handling: user-guide/error-handling.md
+  - API Reference:
+    - Overview: api/index.md
+    - Core: api/core.md
+    - Configuration: api/config.md
+    - Registry: api/registry.md
+    - Evaluation: api/eval.md
+    - Errors: api/errors.md
+    - Contrib: api/contrib.md
+  - Advanced:
+    - Component Registry: advanced/component-registry.md
+    - Serialization: advanced/serialization.md
+    - Architecture: advanced/architecture.md
+  - Contributing: contributing.md
+  - Changelog: changelog.md
+  - FAQ: faq.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+  - attr_list
+  - md_in_html
+  - tables
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/yourorg/flowengine
+  version:
+    provider: mike
