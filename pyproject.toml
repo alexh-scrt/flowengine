@@ -8,7 +8,7 @@ build-backend = "poetry.core.masonry.api"
 [project]
 name = "flowengine"
 version = "0.1.1"
-description = "Lightweight YAML-driven state machine for Python"
+description = "Lightweight YAML-driven workflow engine for Python"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -61,7 +61,7 @@ docs = [
 Homepage = "https://github.com/alexh-scrt/flowengine"
 Documentation = "https://flowengine.readthedocs.io"
 Repository = "https://github.com/alexh-scrt/flowengine"
-Changelog = "https://github.com/alexh-scrt/flowengine/blob/main/CHANGELOG.md"
+Changelog = "https://github.com/alexh-scrt/flowengine/blob/master/CHANGELOG.md"
 
 [tool.hatch.build.targets.sdist]
 include = ["/src"]
@@ -103,8 +103,8 @@ exclude_lines = [
 
 [tool.poetry]
 name = "flowengine"
-version = "0.1.0"
-description = "Lightweight YAML-driven state machine workflow engine for Python"
+version = "0.1.1"
+description = "Lightweight YAML-driven workflow engine for Python"
 authors = ["Alex H <alexh@scrtlabs.com>"]
 readme = "README.md"
 packages = [{ include = "flowengine", from = "src" }]

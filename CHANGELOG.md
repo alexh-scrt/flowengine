@@ -29,3 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Safe expression evaluation prevents code injection
 - Restricted AST nodes prevent malicious code execution
 - No access to Python builtins in condition evaluation
+
+## [0.1.1] - 2025-12-28
+
+### Added
+
+- Documentation and examples https://flowengine.readthedocs.io
