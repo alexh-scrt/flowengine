@@ -1,8 +1,9 @@
 site_name: FlowEngine
 site_description: Lightweight YAML-driven state machine for Python
 site_url: https://flowengine.readthedocs.io
-repo_url: https://github.com/yourorg/flowengine
-repo_name: yourorg/flowengine
+repo_url: https://github.com/alexh-scrt/flowengine
+repo_name: alexh-scrt/flowengine
+docs_dir: .
 
 theme:
   name: material
@@ -34,7 +35,7 @@ plugins:
   - mkdocstrings:
       handlers:
         python:
-          paths: [src]
+          paths: [../src]
           options:
             docstring_style: google
             show_source: true
@@ -95,6 +96,6 @@ markdown_extensions:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/yourorg/flowengine
+      link: https://github.com/alexh-scrt/flowengine
   version:
     provider: mike
