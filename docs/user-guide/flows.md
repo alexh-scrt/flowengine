@@ -1,6 +1,6 @@
 # Flow Configuration
 
-Flows define how components are orchestrated. FlowEngine supports two flow types with different execution semantics.
+Flows define how components are orchestrated. FlowEngine supports three flow types with different execution semantics.
 
 ---
 
@@ -23,13 +23,20 @@ components:
 
 # Flow definition
 flow:
-  type: sequential  # or "conditional"
+  type: sequential  # or "conditional" or "graph"
   settings:
     fail_fast: true
     timeout_seconds: 300
-  steps:
+  steps:           # For sequential/conditional flows
     - component: component_name
       condition: "context.data.ready == True"
+  # OR for graph flows:
+  # nodes:
+  #   - id: node_id
+  #     component: component_name
+  # edges:
+  #   - source: node_a
+  #     target: node_b
 ```
 
 ---
@@ -92,16 +99,134 @@ Step 4: handle_unknown → Skip (not evaluated)
 
 ---
 
+### Graph (DAG Execution)
+
+Define flows as **directed acyclic graphs** where nodes are components and edges define execution flow. The graph executor uses topological ordering (Kahn's algorithm) to determine execution order.
+
+```yaml
+flow:
+  type: graph
+  settings:
+    timeout_seconds: 60
+  nodes:
+    - id: fetch
+      component: fetch_data
+    - id: validate
+      component: validator
+    - id: process
+      component: processor
+    - id: notify
+      component: notifier
+  edges:
+    - source: fetch
+      target: validate
+    - source: validate
+      target: process
+    - source: process
+      target: notify
+```
+
+```
+fetch → validate → process → notify
+```
+
+#### Port-Based Routing
+
+Components can signal which output port to activate, enabling conditional branching in graphs:
+
+```python
+class ValidatorComponent(BaseComponent):
+    def process(self, context: FlowContext) -> FlowContext:
+        if is_valid(context.get("data")):
+            self.set_output_port(context, "valid")
+        else:
+            self.set_output_port(context, "invalid")
+        return context
+```
+
+```yaml
+flow:
+  type: graph
+  nodes:
+    - id: fetch
+      component: fetch_data
+    - id: validate
+      component: validator
+    - id: process_valid
+      component: processor
+    - id: handle_invalid
+      component: error_handler
+  edges:
+    - source: fetch
+      target: validate
+    - source: validate
+      target: process_valid
+      port: "valid"            # Only activates when port == "valid"
+    - source: validate
+      target: handle_invalid
+      port: "invalid"          # Only activates when port == "invalid"
+```
+
+```
+               ┌─ [valid] ──→ process_valid
+fetch → validate
+               └─ [invalid] → handle_invalid
+```
+
+**Edge routing rules:**
+
+| Edge Type | Behavior |
+|-----------|----------|
+| No `port` (unconditional) | Always activates |
+| `port: "name"` | Only activates when component sets matching active port |
+| No active port set | Only unconditional edges activate |
+
+#### Node Configuration
+
+Each node can have:
+
+```yaml
+nodes:
+  - id: my_node             # Required: unique node ID
+    component: my_component  # Required: component name
+    description: "What it does"  # Optional
+    on_error: fail           # Optional: fail (default), skip, or continue
+```
+
+#### Multiple Root Nodes
+
+Nodes with no incoming edges are root nodes — they all execute first:
+
+```yaml
+nodes:
+  - id: source_a
+    component: fetch_api
+  - id: source_b
+    component: fetch_db
+  - id: merge
+    component: merger
+edges:
+  - source: source_a
+    target: merge
+  - source: source_b
+    target: merge
+```
+
+Both `source_a` and `source_b` execute before `merge`.
+
+---
+
 ## Comparison
 
 | Flow Type | Behavior | Use Case |
 |-----------|----------|----------|
 | `sequential` | All matching steps run | Data pipelines, multi-step processing |
 | `conditional` | First match wins, then stop | Request routing, dispatch, switch/case |
+| `graph` | DAG with port-based routing | Agent orchestration, approval flows, complex workflows |
 
 ---
 
-## Step Configuration
+## Step Configuration (Sequential/Conditional)
 
 Each step can have the following options:
 
@@ -311,6 +436,46 @@ flow:
 
     - component: handle_not_found
       # No condition = default case
+```
+
+### Approval Workflow (Graph with Suspend/Resume)
+
+```yaml
+name: "Approval Workflow"
+version: "1.0"
+
+components:
+  - name: intake
+    type: workflow.IntakeComponent
+  - name: approval
+    type: workflow.ApprovalComponent
+  - name: process_approved
+    type: workflow.ProcessComponent
+  - name: process_rejected
+    type: workflow.RejectionComponent
+
+flow:
+  type: graph
+  settings:
+    timeout_seconds: 3600
+  nodes:
+    - id: intake
+      component: intake
+    - id: approve
+      component: approval
+    - id: approved
+      component: process_approved
+    - id: rejected
+      component: process_rejected
+  edges:
+    - source: intake
+      target: approve
+    - source: approve
+      target: approved
+      port: "approved"
+    - source: approve
+      target: rejected
+      port: "rejected"
 ```
 
 ---

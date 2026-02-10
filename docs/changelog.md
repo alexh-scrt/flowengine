@@ -10,6 +10,43 @@ For the full changelog, see [CHANGELOG.md](https://github.com/yourorg/flowengine
 
 ### [Unreleased]
 
+### [0.2.0] - Graph Execution, Checkpoints, and Hooks
+
+#### Added
+
+- **Graph-Based DAG Execution**
+  - New `flow.type: "graph"` with topological ordering (Kahn's algorithm)
+  - `GraphNodeConfig` and `GraphEdgeConfig` schema models
+  - `GraphExecutor` class for DAG-based flow execution
+  - Cycle detection, unreachable node skipping, and per-node error handling
+
+- **Port-Based Output Routing**
+  - Components signal active output ports via `set_output_port(context, port)`
+  - Graph edges route conditionally based on matching port names
+  - `FlowContext.set_port()`, `get_active_port()`, `clear_port()` methods
+
+- **Async Component Support**
+  - `BaseComponent.process_async()` with automatic sync fallback
+  - `BaseComponent.is_async` detection property
+
+- **Execution Checkpoints (Suspend/Resume)**
+  - `FlowContext.suspend(node_id, reason)` for mid-execution pausing
+  - `Checkpoint` dataclass with JSON serialization
+  - `CheckpointStore` abstraction with `InMemoryCheckpointStore`
+  - `FlowEngine.resume(checkpoint_id, resume_data)` for flow continuation
+
+- **Step Lifecycle Hooks**
+  - `ExecutionHook` Protocol: `on_node_start`, `on_node_complete`, `on_node_error`, `on_node_skipped`, `on_flow_suspended`
+  - Fault-tolerant — broken hooks never break flow execution
+  - Multiple hooks supported simultaneously
+
+#### Changed
+
+- `FlowEngine` accepts `checkpoint_store` and `hooks` parameters
+- `FlowDefinition.type` accepts `"graph"` alongside `"sequential"` and `"conditional"`
+- `ExecutionMetadata` includes suspension and completed_nodes state
+- Context serialization includes all new metadata fields
+
 ### [0.1.0] - Initial Release
 
 #### Added

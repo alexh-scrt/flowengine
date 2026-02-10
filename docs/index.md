@@ -56,6 +56,30 @@ FlowEngine enables developers to define execution flows declaratively in YAML, b
 
     Fully serialize and restore context state for replay and debugging
 
+-   :material-graph-outline:{ .lg .middle } **Graph-Based DAG Execution**
+
+    ---
+
+    Define flows as directed acyclic graphs with topological ordering and port-based routing
+
+-   :material-lightning-bolt:{ .lg .middle } **Async Component Support**
+
+    ---
+
+    Native async processing with automatic sync fallback via `process_async()`
+
+-   :material-pause-circle:{ .lg .middle } **Execution Checkpoints**
+
+    ---
+
+    Suspend and resume flows mid-execution with serializable checkpoint snapshots
+
+-   :material-hook:{ .lg .middle } **Step Lifecycle Hooks**
+
+    ---
+
+    Observe flow execution with pluggable, fault-tolerant hook callbacks
+
 </div>
 
 ---
@@ -117,12 +141,13 @@ print(result.data.message)  # "Hello, FlowEngine!"
 
 ## Flow Types
 
-FlowEngine supports two execution modes:
+FlowEngine supports three execution modes:
 
 | Flow Type | Behavior | Use Case |
 |-----------|----------|----------|
 | `sequential` | All matching steps run in order | Data pipelines, multi-step processing |
 | `conditional` | First matching condition wins | Request routing, dispatch, switch/case |
+| `graph` | DAG execution with port-based routing | Agent orchestration, approval flows, complex workflows |
 
 ---
 

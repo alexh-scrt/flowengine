@@ -8,7 +8,12 @@ FlowEngine enables developers to define execution flows declaratively in YAML, b
 
 - **YAML-Driven Configuration** — Define flows in human-readable YAML files
 - **Component-Based Architecture** — Build reusable, testable processing units
+- **Graph-Based DAG Execution** — Define flows as directed acyclic graphs with topological ordering
+- **Port-Based Output Routing** — Components route execution through named output ports
 - **Conditional Execution** — Execute steps based on runtime context state
+- **Async Component Support** — Native async processing with automatic sync fallback
+- **Execution Checkpoints** — Suspend and resume flows mid-execution with serializable checkpoints
+- **Step Lifecycle Hooks** — Observe flow execution with pluggable hook callbacks
 - **Safe Expression Evaluation** — Condition expressions are validated against an AST allowlist
 - **Full Type Hints** — Compatible with mypy strict mode
 - **Execution Metadata** — Track timing, errors, and skipped components with step-level detail
@@ -199,7 +204,7 @@ flow:
 
 ## Flow Types
 
-FlowEngine supports two flow execution types:
+FlowEngine supports three flow execution types:
 
 ### Sequential (Default)
 
@@ -239,10 +244,40 @@ flow:
 
 Only **one step executes**. Once a condition matches, remaining steps are skipped.
 
+### Graph (DAG Execution)
+
+Define flows as **directed acyclic graphs** with topological ordering. Supports port-based routing for conditional branching.
+
+```yaml
+flow:
+  type: graph
+  nodes:
+    - id: fetch
+      component: fetch_data
+    - id: validate
+      component: validator
+    - id: process_valid
+      component: processor
+    - id: handle_invalid
+      component: error_handler
+  edges:
+    - source: fetch
+      target: validate
+    - source: validate
+      target: process_valid
+      port: "valid"              # Only activates when port == "valid"
+    - source: validate
+      target: handle_invalid
+      port: "invalid"            # Only activates when port == "invalid"
+```
+
+Nodes execute in topological order. Port-based edges enable conditional routing — components call `set_output_port(context, "valid")` to choose a branch.
+
 | Flow Type | Behavior | Use Case |
 |-----------|----------|----------|
 | `sequential` | All matching steps run | Data pipelines, multi-step processing |
 | `conditional` | First match wins, then stop | Request routing, dispatch, mutually exclusive branches |
+| `graph` | DAG with port-based routing | Complex workflows, agent orchestration, approval flows |
 
 ## Conditional Step Execution
 
@@ -281,6 +316,88 @@ Conditions support safe Python expressions:
 - Imports
 - Lambda expressions
 - List comprehensions
+
+## Async Components
+
+Components can implement native async processing:
+
+```python
+from flowengine import BaseComponent, FlowContext
+
+class AsyncFetchComponent(BaseComponent):
+    def process(self, context: FlowContext) -> FlowContext:
+        # Sync fallback
+        return context
+
+    async def process_async(self, context: FlowContext) -> FlowContext:
+        data = await fetch_data_async()
+        context.set("data", data)
+        return context
+```
+
+The `is_async` property detects whether a component overrides `process_async`:
+
+```python
+comp = AsyncFetchComponent("fetch")
+print(comp.is_async)  # True
+```
+
+## Execution Checkpoints (Suspend/Resume)
+
+Flows can be suspended mid-execution and resumed later — useful for human-in-the-loop workflows:
+
+```python
+# Component suspends the flow
+class ApprovalComponent(BaseComponent):
+    def process(self, context: FlowContext) -> FlowContext:
+        if not context.has("resume_data"):
+            context.suspend(self.name, reason="Needs human approval")
+        else:
+            decision = context.get("resume_data")
+            context.set("approved", decision.get("approved", False))
+        return context
+```
+
+```python
+from flowengine.core.checkpoint import InMemoryCheckpointStore
+
+store = InMemoryCheckpointStore()
+engine = FlowEngine(config, components, checkpoint_store=store)
+
+# Execute — flow suspends at approval node
+result = engine.execute()
+checkpoint_id = result.get("checkpoint_id")
+
+# Later, resume with data
+resumed = engine.resume(checkpoint_id, resume_data={"approved": True})
+print(resumed.get("approved"))  # True
+```
+
+## Step Lifecycle Hooks
+
+Observe flow execution with hooks:
+
+```python
+class LoggingHook:
+    def on_node_start(self, node_id, component_name, context):
+        print(f"Starting: {node_id}")
+
+    def on_node_complete(self, node_id, component_name, context, duration):
+        print(f"Completed: {node_id} in {duration:.3f}s")
+
+    def on_node_error(self, node_id, component_name, error, context):
+        print(f"Error in {node_id}: {error}")
+
+    def on_node_skipped(self, node_id, component_name, reason):
+        print(f"Skipped: {node_id} ({reason})")
+
+    def on_flow_suspended(self, node_id, reason, checkpoint_id):
+        print(f"Suspended at {node_id}: {reason}")
+
+engine = FlowEngine(config, components, hooks=[LoggingHook()])
+```
+
+Hooks are fault-tolerant — a broken hook never interrupts flow execution.
 
 ## Error Handling
 
@@ -575,6 +692,11 @@ print(result.data.api.data)  # Response JSON
 | `ExecutionMetadata` | Tracks timing, errors, and execution state |
 | `StepTiming` | Timing info for a single step execution |
 | `FlowEngine` | Orchestrates flow execution |
+| `GraphExecutor` | DAG-based graph flow executor |
+| `ExecutionHook` | Protocol for step lifecycle hooks |
+| `Checkpoint` | Serializable flow execution snapshot |
+| `CheckpointStore` | Abstract base class for checkpoint persistence |
+| `InMemoryCheckpointStore` | In-memory checkpoint store implementation |
 
 ### Configuration Classes
 
@@ -585,6 +707,9 @@ print(result.data.api.data)  # Response JSON
 | `ComponentConfig` | Component configuration model |
 | `StepConfig` | Step configuration model |
 | `FlowSettings` | Execution settings model |
+| `FlowDefinition` | Flow structure and execution definition |
+| `GraphNodeConfig` | Node configuration for graph flows |
+| `GraphEdgeConfig` | Edge configuration for graph flows |
 | `ComponentRegistry` | Registry for dynamic component loading |
 
 ### Exceptions

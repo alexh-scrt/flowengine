@@ -62,6 +62,37 @@ Flow structure and execution definition.
         - type
         - settings
         - steps
+        - nodes
+        - edges
+
+---
+
+## GraphNodeConfig
+
+Configuration for a single node in a graph flow.
+
+::: flowengine.config.schema.GraphNodeConfig
+    options:
+      show_source: false
+      members:
+        - id
+        - component
+        - description
+        - on_error
+
+---
+
+## GraphEdgeConfig
+
+Configuration for an edge in a graph flow.
+
+::: flowengine.config.schema.GraphEdgeConfig
+    options:
+      show_source: false
+      members:
+        - source
+        - target
+        - port
 
 ---
 
@@ -154,4 +185,33 @@ print(config.settings.fail_fast)
 # Iterate steps
 for step in config.steps:
     print(f"{step.component}: {step.description}")
+```
+
+### Loading Graph Flow Configuration
+
+```python
+config = ConfigLoader.from_dict({
+    "name": "Graph Flow",
+    "version": "1.0",
+    "components": [
+        {"name": "fetch", "type": "myapp.FetchComponent"},
+        {"name": "process", "type": "myapp.ProcessComponent"},
+    ],
+    "flow": {
+        "type": "graph",
+        "nodes": [
+            {"id": "n1", "component": "fetch"},
+            {"id": "n2", "component": "process"},
+        ],
+        "edges": [
+            {"source": "n1", "target": "n2"},
+        ]
+    }
+})
+
+# Access graph nodes and edges
+for node in config.flow.nodes:
+    print(f"Node {node.id}: {node.component}")
+for edge in config.flow.edges:
+    print(f"Edge {edge.source} -> {edge.target} (port: {edge.port})")
 ```

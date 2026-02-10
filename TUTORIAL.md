@@ -36,6 +36,13 @@
   - [7.1 Unit Testing Components](#71-unit-testing-components)
   - [7.2 Integration Testing Flows](#72-integration-testing-flows)
   - [7.3 Debugging with Dry-Run and Metadata](#73-debugging-with-dry-run-and-metadata)
+- [Part 8: Graph Flows, Async, Checkpoints & Hooks (v0.2.0)](#part-8-graph-flows-async-checkpoints--hooks-v020)
+  - [8.1 Graph-Based DAG Execution](#81-graph-based-dag-execution)
+  - [8.2 Port-Based Output Routing](#82-port-based-output-routing)
+  - [8.3 Async Components](#83-async-components)
+  - [8.4 Execution Checkpoints (Suspend/Resume)](#84-execution-checkpoints-suspendresume)
+  - [8.5 Step Lifecycle Hooks](#85-step-lifecycle-hooks)
+  - [Exercise 8: Build an Approval Workflow](#exercise-8-build-an-approval-workflow)
 - [Appendix A: Complete YAML Examples](#appendix-a-complete-yaml-examples)
 - [Appendix B: Common Patterns Cheat Sheet](#appendix-b-common-patterns-cheat-sheet)
 - [Appendix C: Troubleshooting Guide](#appendix-c-troubleshooting-guide)
@@ -3980,6 +3987,356 @@ value = context.get("result", default_value)
 
 ---
 
+# Part 8: Graph Flows, Async, Checkpoints & Hooks (v0.2.0)
+
+FlowEngine v0.2.0 introduces powerful new features for building complex, production-grade workflows.
+
+## 8.1 Graph-Based DAG Execution
+
+Instead of linear step lists, you can define flows as **directed acyclic graphs** (DAGs) where nodes are components and edges define execution dependencies.
+
+### Basic Graph Flow
+
+```yaml
+name: "Data Pipeline"
+version: "1.0"
+
+components:
+  - name: fetch
+    type: myapp.FetchComponent
+  - name: transform
+    type: myapp.TransformComponent
+  - name: save
+    type: myapp.SaveComponent
+
+flow:
+  type: graph
+  settings:
+    timeout_seconds: 60
+  nodes:
+    - id: fetch
+      component: fetch
+    - id: transform
+      component: transform
+    - id: save
+      component: save
+  edges:
+    - source: fetch
+      target: transform
+    - source: transform
+      target: save
+```
+
+The graph executor uses **Kahn's algorithm** for topological sorting to determine execution order. Root nodes (nodes with no incoming edges) execute first.
+
+### Python API
+
+```python
+from flowengine import FlowEngine, FlowConfig
+from flowengine.config.schema import (
+    ComponentConfig, FlowDefinition, FlowSettings,
+    GraphNodeConfig, GraphEdgeConfig,
+)
+
+config = FlowConfig(
+    name="pipeline",
+    version="1.0",
+    components=[
+        ComponentConfig(name="fetch", type="t.F"),
+        ComponentConfig(name="transform", type="t.T"),
+        ComponentConfig(name="save", type="t.S"),
+    ],
+    flow=FlowDefinition(
+        type="graph",
+        settings=FlowSettings(timeout_seconds=60),
+        nodes=[
+            GraphNodeConfig(id="fetch", component="fetch"),
+            GraphNodeConfig(id="transform", component="transform"),
+            GraphNodeConfig(id="save", component="save"),
+        ],
+        edges=[
+            GraphEdgeConfig(source="fetch", target="transform"),
+            GraphEdgeConfig(source="transform", target="save"),
+        ],
+    ),
+)
+
+instances = {
+    "fetch": FetchComponent("fetch"),
+    "transform": TransformComponent("transform"),
+    "save": SaveComponent("save"),
+}
+
+engine = FlowEngine(config, instances, validate_types=False)
+result = engine.execute()
+```
+
+### Key Features
+
+- **Multiple root nodes**: Nodes with no incoming edges all execute first
+- **Unreachable node skipping**: Nodes that no active edge reaches are skipped
+- **Per-node error handling**: Each node has `on_error: fail | skip | continue`
+- **Cycle detection**: Invalid graphs are rejected with clear error messages
+
+---
+
+## 8.2 Port-Based Output Routing
+
+Components in graph flows can direct execution to specific downstream branches using **output ports**.
+
+```python
+from flowengine import BaseComponent, FlowContext
+
+class ValidatorComponent(BaseComponent):
+    def process(self, context: FlowContext) -> FlowContext:
+        data = context.get("data")
+
+        if self.is_valid(data):
+            self.set_output_port(context, "valid")
+        else:
+            self.set_output_port(context, "invalid")
+
+        return context
+```
+
+```yaml
+flow:
+  type: graph
+  nodes:
+    - id: input
+      component: input_handler
+    - id: validate
+      component: validator
+    - id: process
+      component: processor
+    - id: reject
+      component: rejector
+  edges:
+    - source: input
+      target: validate
+    - source: validate
+      target: process
+      port: "valid"          # Only activates when port == "valid"
+    - source: validate
+      target: reject
+      port: "invalid"        # Only activates when port == "invalid"
+```
+
+### Edge Routing Rules
+
+| Edge Configuration | Behavior |
+|-------------------|----------|
+| No `port` field (unconditional) | Always activates regardless of active port |
+| `port: "name"` | Only activates when the component sets a matching active port |
+| Component sets no port | Only unconditional edges activate |
+
+### Low-Level Port API
+
+```python
+# Components typically use the helper:
+self.set_output_port(context, "my_port")
+
+# But you can use context methods directly:
+context.set_port("my_port")
+port = context.get_active_port()  # "my_port"
+context.clear_port()              # Clears to None
+```
+
+The graph executor automatically clears the active port before each node executes.
+
+---
+
+## 8.3 Async Components
+
+Components can implement native async processing:
+
+```python
+import asyncio
+from flowengine import BaseComponent, FlowContext
+
+class AsyncFetchComponent(BaseComponent):
+    def process(self, context: FlowContext) -> FlowContext:
+        # Sync fallback — used when async is unavailable
+        data = sync_fetch()
+        context.set("data", data)
+        return context
+
+    async def process_async(self, context: FlowContext) -> FlowContext:
+        # Native async implementation
+        data = await async_fetch()
+        context.set("data", data)
+        return context
+```
+
+### Detection
+
+```python
+comp = AsyncFetchComponent("fetch")
+print(comp.is_async)  # True — process_async is overridden
+
+sync_comp = SimpleComponent("sync")
+print(sync_comp.is_async)  # False
+```
+
+### Automatic Fallback
+
+If a component does **not** override `process_async()`, the default implementation calls the synchronous `process()` method:
+
+```python
+# This works even for sync-only components:
+result = await sync_component.process_async(context)
+```
+
+---
+
+## 8.4 Execution Checkpoints (Suspend/Resume)
+
+Flows can be **suspended** mid-execution and **resumed** later with new data. This enables human-in-the-loop workflows, external approvals, and long-running processes.
+
+### Suspending a Flow
+
+```python
+class ApprovalComponent(BaseComponent):
+    def process(self, context: FlowContext) -> FlowContext:
+        if not context.has("resume_data"):
+            # First execution: suspend and wait
+            context.suspend(self.name, reason="Needs manager approval")
+        else:
+            # Resumed: process the decision
+            decision = context.get("resume_data")
+            context.set("approved", decision.get("approved", False))
+        return context
+```
+
+### Setting Up Checkpoint Storage
+
+```python
+from flowengine.core.checkpoint import InMemoryCheckpointStore
+
+store = InMemoryCheckpointStore()
+engine = FlowEngine(config, components, checkpoint_store=store)
+```
+
+### Execute and Resume
+
+```python
+# Step 1: Execute — flow suspends at approval node
+result = engine.execute()
+
+print(result.metadata.suspended)           # True
+print(result.metadata.suspended_at_node)   # "approve"
+print(result.metadata.suspension_reason)   # "Needs manager approval"
+
+checkpoint_id = result.get("checkpoint_id")
+
+# Step 2: Later, resume with approval data
+resumed = engine.resume(checkpoint_id, resume_data={"approved": True})
+
+print(resumed.metadata.suspended)  # False
+print(resumed.get("approved"))     # True
+```
+
+### How Resume Works
+
+1. The engine loads the checkpoint (flow config + serialized context)
+2. Already-completed nodes are **skipped** (tracked via `metadata.completed_nodes`)
+3. The suspended node **re-executes** (now with `resume_data` available)
+4. Execution continues to remaining downstream nodes
+5. The checkpoint is **deleted** after successful resume
+
+### Custom Checkpoint Stores
+
+Implement `CheckpointStore` for production persistence:
+
+```python
+from flowengine.core.checkpoint import CheckpointStore, Checkpoint
+
+class RedisCheckpointStore(CheckpointStore):
+    def __init__(self, redis_client):
+        self._redis = redis_client
+
+    def save(self, checkpoint: Checkpoint) -> str:
+        self._redis.set(checkpoint.checkpoint_id, checkpoint.to_json())
+        return checkpoint.checkpoint_id
+
+    def load(self, checkpoint_id: str) -> Checkpoint | None:
+        data = self._redis.get(checkpoint_id)
+        return Checkpoint.from_json(data) if data else None
+
+    def delete(self, checkpoint_id: str) -> None:
+        self._redis.delete(checkpoint_id)
+```
+
+---
+
+## 8.5 Step Lifecycle Hooks
+
+Observe flow execution with **hooks** — callback objects that receive events during execution.
+
+### Creating a Hook
+
+```python
+class MetricsHook:
+    def on_node_start(self, node_id, component_name, context):
+        print(f"[START] {node_id} ({component_name})")
+
+    def on_node_complete(self, node_id, component_name, context, duration):
+        print(f"[DONE]  {node_id} in {duration:.3f}s")
+
+    def on_node_error(self, node_id, component_name, error, context):
+        print(f"[ERROR] {node_id}: {error}")
+
+    def on_node_skipped(self, node_id, component_name, reason):
+        print(f"[SKIP]  {node_id} ({reason})")
+
+    def on_flow_suspended(self, node_id, reason, checkpoint_id):
+        print(f"[PAUSE] {node_id}: {reason}")
+```
+
+### Using Hooks
+
+```python
+hook = MetricsHook()
+engine = FlowEngine(config, components, hooks=[hook])
+result = engine.execute()
+```
+
+### Key Properties
+
+- **Partial implementation**: You only need to implement the methods you care about
+- **Fault-tolerant**: If a hook raises an exception, it's silently caught — hooks never break flow execution
+- **Multiple hooks**: Pass a list of hooks; all receive all events
+- **Available events**:
+
+| Hook Method | When Called | Arguments |
+|-------------|-----------|-----------|
+| `on_node_start` | Before a node executes | `node_id, component_name, context` |
+| `on_node_complete` | After successful execution | `node_id, component_name, context, duration` |
+| `on_node_error` | After a node raises an error | `node_id, component_name, error, context` |
+| `on_node_skipped` | When a node is skipped | `node_id, component_name, reason` |
+| `on_flow_suspended` | When flow is suspended | `node_id, reason, checkpoint_id` |
+
+---
+
+## Exercise 8: Build an Approval Workflow
+
+Build a complete approval workflow using graph flows, suspension, and hooks:
+
+1. Create a `SubmitComponent` that accepts a request
+2. Create an `ApprovalComponent` that suspends for human approval
+3. Create `ApprovedComponent` and `RejectedComponent` with port routing
+4. Wire them together as a graph flow
+5. Add a `RecordingHook` that logs all events
+6. Execute the flow, verify suspension, then resume with approval
+
+**Hints:**
+- Use `set_output_port()` in the approval component to route to approved/rejected
+- Use `InMemoryCheckpointStore` for the checkpoint store
+- Check `result.metadata.suspended` after the first execution
+- Use `engine.resume(checkpoint_id, resume_data={...})` to continue
+
+---
+
 ## Summary
 
 This tutorial covered:
@@ -3991,6 +4348,7 @@ This tutorial covered:
 5. **Advanced Patterns:** Registry, reusable components, real-world examples
 6. **Built-in Components:** LoggingComponent, HTTPComponent
 7. **Testing:** Unit tests, integration tests, debugging
+8. **v0.2.0 Features:** Graph DAG execution, port routing, async components, checkpoints, hooks
 
 FlowEngine enables you to build maintainable, observable, and resilient data pipelines with a declarative YAML-driven approach. Start simple, add complexity as needed, and leverage the rich metadata to understand your flow's behavior.
 

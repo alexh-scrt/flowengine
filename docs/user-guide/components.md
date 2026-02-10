@@ -307,6 +307,76 @@ class ETLComponent(BaseComponent):
 
 ---
 
+## Async Components
+
+Components can implement native async processing by overriding `process_async()`:
+
+```python
+import asyncio
+from flowengine import BaseComponent, FlowContext
+
+class AsyncAPIComponent(BaseComponent):
+    def process(self, context: FlowContext) -> FlowContext:
+        # Sync fallback (used when async is not available)
+        context.set("result", sync_fetch())
+        return context
+
+    async def process_async(self, context: FlowContext) -> FlowContext:
+        # Native async implementation
+        result = await async_fetch()
+        context.set("result", result)
+        return context
+```
+
+### is_async Property
+
+Detect whether a component supports async:
+
+```python
+comp = AsyncAPIComponent("api")
+print(comp.is_async)  # True — process_async is overridden
+
+sync_comp = SimpleComponent("sync")
+print(sync_comp.is_async)  # False — only process() defined
+```
+
+### Default Fallback
+
+If a component does **not** override `process_async()`, calling it will automatically run the synchronous `process()` method. This means all components can be used in async contexts.
+
+---
+
+## Port-Based Output Routing
+
+In graph flows, components can direct execution to specific downstream branches using output ports:
+
+```python
+class RouterComponent(BaseComponent):
+    def process(self, context: FlowContext) -> FlowContext:
+        request_type = context.get("request_type")
+
+        if request_type == "urgent":
+            self.set_output_port(context, "urgent")
+        else:
+            self.set_output_port(context, "normal")
+
+        return context
+```
+
+The `set_output_port(context, port_name)` method sets the active port on the context. The graph executor then only activates edges whose `port` field matches the active port (plus any unconditional edges with no port).
+
+### Low-Level Port API
+
+You can also use the context's port methods directly:
+
+```python
+context.set_port("my_port")          # Set active port
+port = context.get_active_port()     # Get active port (or None)
+context.clear_port()                 # Clear active port
+```
+
+---
+
 ## Best Practices
 
 1. **Always call `super().init(config)`** in your `init()` method
@@ -316,3 +386,5 @@ class ETLComponent(BaseComponent):
 5. **Call `check_deadline()`** in loops for long operations
 6. **Validate configuration** in `validate_config()`
 7. **Keep components focused** - one responsibility per component
+8. **Use `set_output_port()`** for graph branching instead of manipulating context flags
+9. **Override `process_async()`** for I/O-bound components that benefit from async

@@ -20,6 +20,15 @@ A context has three main parts:
 | `metadata` | `ExecutionMetadata` | Timing, errors, execution state |
 | `input` | `Any` | Optional initial input data |
 
+Plus v0.2.0 additions for graph flow support:
+
+| Method | Purpose |
+|--------|---------|
+| `set_port(port)` | Set the active output port for routing |
+| `get_active_port()` | Get current active port (or `None`) |
+| `clear_port()` | Clear the active port |
+| `suspend(node_id, reason)` | Suspend flow execution at a node |
+
 ---
 
 ## Working with Data
@@ -310,6 +319,99 @@ steps:
 
 ---
 
+## Port-Based Routing
+
+In graph flows, components signal which branch to take by setting an output port on the context:
+
+```python
+class DecisionComponent(BaseComponent):
+    def process(self, context: FlowContext) -> FlowContext:
+        score = context.get("score", 0)
+
+        if score >= 80:
+            context.set_port("high")
+        elif score >= 50:
+            context.set_port("medium")
+        else:
+            context.set_port("low")
+
+        return context
+```
+
+Or use the helper method on `BaseComponent`:
+
+```python
+self.set_output_port(context, "high")
+```
+
+The graph executor clears the active port before each node, so ports only apply to the current node's outgoing edges.
+
+### Port Methods
+
+```python
+context.set_port("my_port")          # Set active port
+port = context.get_active_port()     # Returns "my_port"
+context.clear_port()                 # Clears port (returns to None)
+```
+
+---
+
+## Flow Suspension
+
+Components can suspend flow execution mid-way, useful for human-in-the-loop patterns:
+
+```python
+class ApprovalComponent(BaseComponent):
+    def process(self, context: FlowContext) -> FlowContext:
+        if not context.has("resume_data"):
+            # First run: suspend for human approval
+            context.suspend(self.name, reason="Needs human approval")
+        else:
+            # Resumed: process the approval decision
+            decision = context.get("resume_data")
+            context.set("approved", decision.get("approved", False))
+        return context
+```
+
+### Suspension Metadata
+
+When a flow is suspended, the context metadata tracks the state:
+
+```python
+result = engine.execute()
+
+if result.metadata.suspended:
+    print(f"Suspended at: {result.metadata.suspended_at_node}")
+    print(f"Reason: {result.metadata.suspension_reason}")
+
+    # Get the checkpoint ID for later resume
+    checkpoint_id = result.get("checkpoint_id")
+```
+
+### Completed Nodes
+
+The context tracks which graph nodes have completed, so they can be skipped on resume:
+
+```python
+print(result.metadata.completed_nodes)  # ["fetch", "validate"]
+```
+
+When a flow resumes, already-completed nodes are skipped. The suspended node re-executes (with `resume_data` available), then execution continues to remaining nodes.
+
+### Serialization
+
+All suspension state is included in context serialization:
+
+```python
+d = context.to_dict()
+restored = FlowContext.from_dict(d)
+
+assert restored.metadata.suspended == True
+assert restored.metadata.completed_nodes == ["fetch", "validate"]
+```
+
+---
+
 ## Best Practices
 
 1. **Use descriptive keys**: `user_profile` not `up`
@@ -318,6 +420,8 @@ steps:
 4. **Clean up temporary data**: Delete intermediate results if not needed
 5. **Leverage metadata**: Use timing data for performance analysis
 6. **Serialize for debugging**: Save context snapshots on errors
+7. **Never use `_` prefixed keys** for data via `context.set()` — `DotDict` treats them as object attributes, not data keys
+8. **Use `set_port()`** for graph routing instead of manual context flags
 
 ---
 

@@ -14,6 +14,7 @@ The main orchestrator for executing flows.
       members:
         - __init__
         - execute
+        - resume
         - validate
         - dry_run
         - validate_component_types
@@ -33,13 +34,16 @@ Abstract base class for all components.
         - init
         - setup
         - process
+        - process_async
         - teardown
         - validate_config
         - health_check
         - check_deadline
+        - set_output_port
         - name
         - config
         - is_initialized
+        - is_async
 
 ---
 
@@ -56,6 +60,10 @@ Context object passed through all components.
         - get
         - has
         - delete
+        - set_port
+        - get_active_port
+        - clear_port
+        - suspend
         - to_dict
         - to_json
         - from_dict
@@ -108,6 +116,10 @@ Tracks timing, errors, and execution state.
         - has_errors
         - has_condition_errors
         - total_duration
+        - suspended
+        - suspended_at_node
+        - suspension_reason
+        - completed_nodes
 
 ---
 
@@ -124,3 +136,80 @@ Timing information for a single step execution.
         - duration
         - started_at
         - execution_order
+
+---
+
+## GraphExecutor
+
+Executes graph-type flows using topological ordering with port-based routing.
+
+::: flowengine.core.graph.GraphExecutor
+    options:
+      show_source: false
+      members:
+        - __init__
+        - execute
+
+---
+
+## ExecutionHook
+
+Protocol for step lifecycle hooks. Implement any or all methods.
+
+::: flowengine.core.engine.ExecutionHook
+    options:
+      show_source: false
+      members:
+        - on_node_start
+        - on_node_complete
+        - on_node_error
+        - on_node_skipped
+        - on_flow_suspended
+
+---
+
+## Checkpoint
+
+Serializable snapshot of flow execution state for suspend/resume.
+
+::: flowengine.core.checkpoint.Checkpoint
+    options:
+      show_source: false
+      members:
+        - __init__
+        - checkpoint_id
+        - flow_config
+        - context
+        - created_at
+        - to_dict
+        - from_dict
+        - to_json
+        - from_json
+
+---
+
+## CheckpointStore
+
+Abstract base class for checkpoint persistence.
+
+::: flowengine.core.checkpoint.CheckpointStore
+    options:
+      show_source: false
+      members:
+        - save
+        - load
+        - delete
+
+---
+
+## InMemoryCheckpointStore
+
+In-memory implementation of `CheckpointStore`.
+
+::: flowengine.core.checkpoint.InMemoryCheckpointStore
+    options:
+      show_source: false
+      members:
+        - save
+        - load
+        - delete
