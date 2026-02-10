@@ -4,7 +4,9 @@ FlowEngine enables developers to:
 - Define execution flows declaratively in YAML
 - Build pluggable component systems with standardized interfaces
 - Execute conditional branching based on runtime state
+- Execute DAG-based graph flows with port-based routing
 - Maintain context across component executions
+- Pause and resume workflows with execution checkpoints
 
 Example:
     ```python
@@ -27,12 +29,18 @@ Example:
     ```
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Core classes
 from flowengine.core.component import BaseComponent
 from flowengine.core.context import DotDict, ExecutionMetadata, FlowContext, StepTiming
-from flowengine.core.engine import FlowEngine
+from flowengine.core.engine import ExecutionHook, FlowEngine
+from flowengine.core.graph import GraphExecutor
+from flowengine.core.checkpoint import (
+    Checkpoint,
+    CheckpointStore,
+    InMemoryCheckpointStore,
+)
 
 # Configuration
 from flowengine.config.loader import ConfigLoader
@@ -42,6 +50,8 @@ from flowengine.config.schema import (
     FlowConfig,
     FlowDefinition,
     FlowSettings,
+    GraphEdgeConfig,
+    GraphNodeConfig,
     StepConfig,
 )
 
@@ -81,6 +91,11 @@ __all__ = [
     "ExecutionMetadata",
     "StepTiming",
     "FlowEngine",
+    "ExecutionHook",
+    "GraphExecutor",
+    "Checkpoint",
+    "CheckpointStore",
+    "InMemoryCheckpointStore",
     # Config
     "ConfigLoader",
     "ComponentRegistry",
@@ -90,6 +105,8 @@ __all__ = [
     "StepConfig",
     "FlowSettings",
     "FlowDefinition",
+    "GraphNodeConfig",
+    "GraphEdgeConfig",
     # Evaluation
     "ConditionEvaluator",
     "SafeASTValidator",

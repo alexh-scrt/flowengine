@@ -11,10 +11,11 @@ import logging
 import multiprocessing
 import pickle
 import time
+import uuid
 from concurrent.futures import ProcessPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import timezone
 from datetime import datetime
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Protocol, runtime_checkable
 
 from flowengine.config.registry import (
     ComponentRegistry,
@@ -38,6 +39,39 @@ logger = logging.getLogger(__name__)
 
 # Threshold for warning/enforcement about missing deadline checks (seconds)
 DEADLINE_CHECK_WARNING_THRESHOLD = 1.0
+
+
+@runtime_checkable
+class ExecutionHook(Protocol):
+    """Callback protocol for step lifecycle events."""
+
+    def on_node_start(
+        self, node_id: str, component_name: str, context: FlowContext
+    ) -> None: ...
+
+    def on_node_complete(
+        self,
+        node_id: str,
+        component_name: str,
+        context: FlowContext,
+        duration: float,
+    ) -> None: ...
+
+    def on_node_error(
+        self,
+        node_id: str,
+        component_name: str,
+        error: Exception,
+        context: FlowContext,
+    ) -> None: ...
+
+    def on_node_skipped(
+        self, node_id: str, component_name: str, reason: str
+    ) -> None: ...
+
+    def on_flow_suspended(
+        self, node_id: str, reason: str, checkpoint_id: str | None
+    ) -> None: ...
 
 
 class FlowEngine:
@@ -79,6 +113,8 @@ class FlowEngine:
         components: dict[str, BaseComponent],
         evaluator: Optional[ConditionEvaluator] = None,
         validate_types: bool = True,
+        checkpoint_store: Any = None,
+        hooks: list[Any] | None = None,
     ) -> None:
         """Initialize the flow engine.
 
@@ -88,6 +124,8 @@ class FlowEngine:
             evaluator: Optional custom condition evaluator
             validate_types: If True (default), validates that component instances
                            match their declared type paths in the config
+            checkpoint_store: Optional CheckpointStore for pause/resume support
+            hooks: Optional list of ExecutionHook instances for lifecycle callbacks
 
         Raises:
             FlowExecutionError: If components are missing or invalid
@@ -96,6 +134,8 @@ class FlowEngine:
         self.config = config
         self.components = components
         self.evaluator = evaluator or ConditionEvaluator()
+        self._checkpoint_store = checkpoint_store
+        self._hooks = hooks or []
 
         # Flow type and settings
         self.flow_type = config.flow.type
@@ -136,23 +176,40 @@ class FlowEngine:
         Raises:
             FlowExecutionError: If component not found or config invalid
         """
-        for step in self.config.steps:
-            component = self.components.get(step.component)
-            if not component:
-                raise FlowExecutionError(
-                    f"Component not found: {step.component}"
-                )
+        if self.flow_type == "graph":
+            # Graph flows: initialize from nodes
+            for node in self.config.flow.nodes or []:
+                component = self.components.get(node.component)
+                if not component:
+                    raise FlowExecutionError(
+                        f"Component not found: {node.component}"
+                    )
+                comp_config = self._get_component_config(node.component)
+                component.init(comp_config)
+                errors = component.validate_config()
+                if errors:
+                    raise FlowExecutionError(
+                        f"Invalid config for {node.component}: {errors}"
+                    )
+        else:
+            # Sequential/conditional flows: initialize from steps
+            for step in self.config.steps:
+                component = self.components.get(step.component)
+                if not component:
+                    raise FlowExecutionError(
+                        f"Component not found: {step.component}"
+                    )
 
-            # Find component config from flow config
-            comp_config = self._get_component_config(step.component)
-            component.init(comp_config)
+                # Find component config from flow config
+                comp_config = self._get_component_config(step.component)
+                component.init(comp_config)
 
-            # Validate configuration
-            errors = component.validate_config()
-            if errors:
-                raise FlowExecutionError(
-                    f"Invalid config for {step.component}: {errors}"
-                )
+                # Validate configuration
+                errors = component.validate_config()
+                if errors:
+                    raise FlowExecutionError(
+                        f"Invalid config for {step.component}: {errors}"
+                    )
 
     def _get_component_config(self, name: str) -> dict[str, Any]:
         """Get configuration for a named component.
@@ -178,6 +235,7 @@ class FlowEngine:
         For sequential flows: executes all steps in order.
         For conditional flows: executes only the first step whose condition matches
         (first-match branching, like a switch/case statement).
+        For graph flows: executes DAG with topological ordering and port routing.
 
         Args:
             context: Optional existing context (creates new if None)
@@ -198,66 +256,139 @@ class FlowEngine:
             f"Starting {self.flow_type} flow execution: {context.metadata.flow_id}"
         )
 
-        # Track flow start time for timeout enforcement
-        flow_start_time = time.time()
-
         try:
-            for step_idx, step in enumerate(self.config.steps):
-                # Calculate remaining timeout
-                elapsed = time.time() - flow_start_time
-                remaining_timeout = None
-                if self.timeout:
-                    remaining_timeout = self.timeout - elapsed
-                    if remaining_timeout <= 0:
-                        raise FlowTimeoutError(
-                            f"Flow timeout exceeded: {elapsed:.2f}s > {self.timeout}s",
-                            timeout=self.timeout,
-                            elapsed=elapsed,
-                            flow_id=context.metadata.flow_id,
-                            step=step.component,
-                        )
-
-                executed = self._execute_step(
-                    step, context, remaining_timeout, step_idx
-                )
-
-                # For conditional flows, stop after first matching step executes
-                if self.flow_type == "conditional" and executed is not None:
-                    logger.debug(
-                        f"Conditional flow: stopping after {step.component} matched"
-                    )
-                    context = executed
-                    break
-
-                # Update context if step returned a new one (not skipped)
-                if executed is not None:
-                    context = executed
-                # else: step was skipped, context unchanged (modified in-place)
-
-                # Safety assertion to catch any internal errors
-                assert context is not None, (
-                    f"Internal error: context became None after step {step.component}"
-                )
-
+            if self.flow_type == "graph":
+                context = self._execute_graph(context)
+            else:
+                context = self._execute_steps(context)
         except (
             FlowExecutionError,
             FlowTimeoutError,
             ComponentError,
             ConditionEvaluationError,
+            ConfigurationError,
         ):
             raise
         except Exception as e:
             logger.error(f"Unexpected error in flow: {e}")
             raise FlowExecutionError(f"Flow execution failed: {e}") from e
         finally:
-            context.metadata.completed_at = datetime.now(timezone.utc)
+            if not context.metadata.suspended:
+                context.metadata.completed_at = datetime.now(timezone.utc)
+
+        # Handle suspension checkpoint
+        if context.metadata.suspended and self._checkpoint_store:
+            from flowengine.core.checkpoint import Checkpoint
+
+            checkpoint = Checkpoint(
+                flow_config=self.config.model_dump(),
+                context=context.to_dict(),
+                created_at=datetime.now(timezone.utc).isoformat(),
+                checkpoint_id=str(uuid.uuid4()),
+            )
+            self._checkpoint_store.save(checkpoint)
+            context.set("checkpoint_id", checkpoint.checkpoint_id)
 
         logger.info(
-            f"Flow completed: {context.metadata.flow_id} "
+            f"Flow {'suspended' if context.metadata.suspended else 'completed'}: "
+            f"{context.metadata.flow_id} "
             f"({len(context.metadata.component_timings)} components executed)"
         )
 
         return context
+
+    def _execute_steps(self, context: FlowContext) -> FlowContext:
+        """Execute sequential/conditional flow steps."""
+        # Track flow start time for timeout enforcement
+        flow_start_time = time.time()
+
+        for step_idx, step in enumerate(self.config.steps):
+            # Calculate remaining timeout
+            elapsed = time.time() - flow_start_time
+            remaining_timeout = None
+            if self.timeout:
+                remaining_timeout = self.timeout - elapsed
+                if remaining_timeout <= 0:
+                    raise FlowTimeoutError(
+                        f"Flow timeout exceeded: {elapsed:.2f}s > {self.timeout}s",
+                        timeout=self.timeout,
+                        elapsed=elapsed,
+                        flow_id=context.metadata.flow_id,
+                        step=step.component,
+                    )
+
+            executed = self._execute_step(
+                step, context, remaining_timeout, step_idx
+            )
+
+            # For conditional flows, stop after first matching step executes
+            if self.flow_type == "conditional" and executed is not None:
+                logger.debug(
+                    f"Conditional flow: stopping after {step.component} matched"
+                )
+                context = executed
+                break
+
+            # Update context if step returned a new one (not skipped)
+            if executed is not None:
+                context = executed
+            # else: step was skipped, context unchanged (modified in-place)
+
+            # Safety assertion to catch any internal errors
+            assert context is not None, (
+                f"Internal error: context became None after step {step.component}"
+            )
+
+        return context
+
+    def _execute_graph(self, context: FlowContext) -> FlowContext:
+        """Execute a graph-type flow using the GraphExecutor."""
+        from flowengine.core.graph import GraphExecutor
+
+        executor = GraphExecutor(
+            nodes=self.config.flow.nodes or [],
+            edges=self.config.flow.edges or [],
+            components=self.components,
+            settings=self.config.flow.settings,
+            hooks=self._hooks,
+        )
+        return executor.execute(context)
+
+    def resume(
+        self,
+        checkpoint_id: str,
+        resume_data: dict[str, Any] | None = None,
+    ) -> FlowContext:
+        """Resume a suspended flow from checkpoint.
+
+        Args:
+            checkpoint_id: ID from a previous suspended execution
+            resume_data: Data to inject (e.g., approval decision)
+
+        Returns:
+            FlowContext with execution completed from suspension point
+        """
+        if not self._checkpoint_store:
+            raise FlowExecutionError("No checkpoint store configured")
+
+        checkpoint = self._checkpoint_store.load(checkpoint_id)
+        if not checkpoint:
+            raise FlowExecutionError(f"Checkpoint not found: {checkpoint_id}")
+
+        context = FlowContext.from_dict(checkpoint.context)
+        context.metadata.suspended = False
+        context.metadata.suspended_at_node = None
+        context.metadata.suspension_reason = None
+
+        if resume_data:
+            context.set("resume_data", resume_data)
+
+        # Re-execute graph from the suspended node onward
+        # (completed_nodes tells the executor which nodes to skip)
+        result = self._execute_graph(context)
+
+        self._checkpoint_store.delete(checkpoint_id)
+        return result
 
     def _execute_step(
         self,
@@ -603,10 +734,16 @@ class FlowEngine:
         """
         errors: list[str] = []
 
-        # Check all referenced components exist
-        for step in self.config.steps:
-            if step.component not in self.components:
-                errors.append(f"Unknown component: {step.component}")
+        if self.flow_type == "graph":
+            # Validate graph nodes
+            for node in self.config.flow.nodes or []:
+                if node.component not in self.components:
+                    errors.append(f"Unknown component: {node.component}")
+        else:
+            # Check all referenced components exist
+            for step in self.config.steps:
+                if step.component not in self.components:
+                    errors.append(f"Unknown component: {step.component}")
 
         # Validate each component's config
         for name, component in self.components.items():
@@ -614,7 +751,7 @@ class FlowEngine:
             for err in comp_errors:
                 errors.append(f"{name}: {err}")
 
-        # Validate conditions
+        # Validate conditions (step-based flows only)
         for step in self.config.steps:
             if step.condition:
                 condition_errors = self.evaluator.validate(step.condition)
@@ -630,11 +767,33 @@ class FlowEngine:
             context: Optional context for condition evaluation
 
         Returns:
-            List of steps that would be executed
+            List of steps/nodes that would be executed
         """
         context = context or FlowContext()
-        executed: list[str] = []
 
+        if self.flow_type == "graph":
+            # For graph flows, return topological order
+            from flowengine.core.graph import GraphExecutor
+
+            executor = GraphExecutor(
+                nodes=self.config.flow.nodes or [],
+                edges=self.config.flow.edges or [],
+                components=self.components,
+                settings=self.config.flow.settings,
+            )
+            order = executor._topological_sort()
+            return [
+                self.config.flow.nodes[
+                    next(
+                        i
+                        for i, n in enumerate(self.config.flow.nodes or [])
+                        if n.id == nid
+                    )
+                ].component
+                for nid in order
+            ]
+
+        executed: list[str] = []
         for step in self.config.steps:
             if step.condition:
                 try:
@@ -667,12 +826,24 @@ class FlowEngine:
 
         return errors
 
+    def _notify(self, method: str, *args: Any, **kwargs: Any) -> None:
+        """Notify all registered hooks."""
+        for hook in self._hooks:
+            fn = getattr(hook, method, None)
+            if fn:
+                try:
+                    fn(*args, **kwargs)
+                except Exception:
+                    pass  # hooks must not break execution
+
     @classmethod
     def from_config(
         cls,
         config: FlowConfig,
         evaluator: Optional[ConditionEvaluator] = None,
         registry: Optional[ComponentRegistry] = None,
+        checkpoint_store: Any = None,
+        hooks: list[Any] | None = None,
     ) -> FlowEngine:
         """Create a FlowEngine by auto-instantiating components from config.
 
@@ -683,6 +854,8 @@ class FlowEngine:
             config: Parsed flow configuration
             evaluator: Optional custom condition evaluator
             registry: Optional pre-configured component registry
+            checkpoint_store: Optional CheckpointStore for pause/resume
+            hooks: Optional list of ExecutionHook instances
 
         Returns:
             Configured FlowEngine instance
@@ -717,7 +890,13 @@ class FlowEngine:
 
             components[comp_config.name] = component
 
-        return cls(config, components, evaluator)
+        return cls(
+            config,
+            components,
+            evaluator,
+            checkpoint_store=checkpoint_store,
+            hooks=hooks,
+        )
 
 
 def _run_component_in_process(

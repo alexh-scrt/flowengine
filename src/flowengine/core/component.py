@@ -126,6 +126,26 @@ class BaseComponent(ABC):
         """
         return []
 
+    async def process_async(self, context: FlowContext) -> FlowContext:
+        """Async processing. Override for native async operations.
+
+        Default implementation calls sync process() — no breaking change.
+        """
+        return self.process(context)
+
+    @property
+    def is_async(self) -> bool:
+        """True if this component overrides process_async with custom logic."""
+        return type(self).process_async is not BaseComponent.process_async
+
+    def set_output_port(self, context: FlowContext, port: str) -> None:
+        """Signal which output port to activate.
+
+        Use in components with multiple outputs (e.g., Condition, Switch).
+        The graph executor will route to edges matching this port.
+        """
+        context.set_port(port)
+
     def health_check(self) -> bool:
         """Check if component is healthy.
 

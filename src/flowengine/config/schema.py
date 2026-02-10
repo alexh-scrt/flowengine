@@ -5,7 +5,7 @@ This module defines Pydantic models for validating flow configurations.
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ComponentConfig(BaseModel):
@@ -98,6 +98,45 @@ class StepConfig(BaseModel):
     )
 
 
+class GraphNodeConfig(BaseModel):
+    """A node in a graph flow.
+
+    Attributes:
+        id: Unique node ID within the graph
+        component: References a component name
+        description: Human-readable node description
+        on_error: How to handle errors (fail/skip/continue)
+    """
+
+    id: str = Field(..., description="Unique node ID within the graph")
+    component: str = Field(..., description="Component name to execute")
+    description: Optional[str] = Field(
+        default=None,
+        description="Human-readable node description",
+    )
+    on_error: Literal["fail", "skip", "continue"] = Field(
+        default="fail",
+        description="Error handling behavior",
+    )
+
+
+class GraphEdgeConfig(BaseModel):
+    """An edge connecting two nodes in a graph flow.
+
+    Attributes:
+        source: Source node ID
+        target: Target node ID
+        port: Output port name (e.g. "true", "false"). None = unconditional edge.
+    """
+
+    source: str = Field(..., description="Source node ID")
+    target: str = Field(..., description="Target node ID")
+    port: Optional[str] = Field(
+        default=None,
+        description="Output port name (e.g. 'true', 'false'). None = unconditional.",
+    )
+
+
 class FlowDefinition(BaseModel):
     """Flow structure definition.
 
@@ -109,26 +148,66 @@ class FlowDefinition(BaseModel):
             - "conditional": First-match branching (like switch/case). Stops
               after the first step whose condition evaluates to True. Only one
               step executes. Defaults on_condition_error to "skip".
+            - "graph": DAG-based execution with topological ordering and
+              port-based routing.
         settings: Execution settings
-        steps: Ordered list of execution steps
+        steps: Ordered list of execution steps (for sequential/conditional)
+        nodes: List of graph nodes (for graph type)
+        edges: List of graph edges (for graph type)
     """
 
-    type: Literal["sequential", "conditional"] = Field(
+    type: Literal["sequential", "conditional", "graph"] = Field(
         default="sequential",
         description=(
             "Flow execution type: 'sequential' runs all matching steps, "
-            "'conditional' stops after first match (switch/case semantics)"
+            "'conditional' stops after first match, "
+            "'graph' executes DAG with port-based routing"
         ),
     )
     settings: FlowSettings = Field(
         default_factory=FlowSettings,
         description="Execution settings",
     )
-    steps: list[StepConfig] = Field(
-        ...,
-        description="Ordered list of execution steps",
-        min_length=1,
+    steps: Optional[list[StepConfig]] = Field(
+        default=None,
+        description="Ordered list of execution steps (sequential/conditional)",
     )
+    nodes: Optional[list[GraphNodeConfig]] = Field(
+        default=None,
+        description="List of graph nodes (graph type)",
+    )
+    edges: Optional[list[GraphEdgeConfig]] = Field(
+        default=None,
+        description="List of graph edges (graph type)",
+    )
+
+    @model_validator(mode="after")
+    def validate_flow_definition(self) -> "FlowDefinition":
+        if self.type in ("sequential", "conditional"):
+            if not self.steps or len(self.steps) == 0:
+                raise ValueError("sequential/conditional flows require 'steps'")
+        elif self.type == "graph":
+            if not self.nodes or len(self.nodes) == 0:
+                raise ValueError("graph flows require 'nodes'")
+            if not self.edges:
+                self.edges = []
+            # Validate unique node IDs
+            node_ids = [n.id for n in self.nodes]
+            if len(node_ids) != len(set(node_ids)):
+                duplicates = [nid for nid in node_ids if node_ids.count(nid) > 1]
+                raise ValueError(f"Duplicate node IDs: {set(duplicates)}")
+            # Validate all edge source/target reference valid node IDs
+            node_id_set = set(node_ids)
+            for edge in self.edges:
+                if edge.source not in node_id_set:
+                    raise ValueError(
+                        f"Edge source '{edge.source}' not found in nodes"
+                    )
+                if edge.target not in node_id_set:
+                    raise ValueError(
+                        f"Edge target '{edge.target}' not found in nodes"
+                    )
+        return self
 
 
 class FlowConfig(BaseModel):
@@ -189,15 +268,24 @@ class FlowConfig(BaseModel):
     def validate_step_components(
         cls, v: FlowDefinition, info: Any
     ) -> FlowDefinition:
-        """Ensure all steps reference defined components."""
-        # Get component names from the already validated components field
+        """Ensure all steps/nodes reference defined components."""
         if "components" in info.data:
             component_names = {c.name for c in info.data["components"]}
-            for step in v.steps:
-                if step.component not in component_names:
-                    raise ValueError(
-                        f"Step references undefined component: {step.component}"
-                    )
+            # Validate step-based flows
+            if v.steps:
+                for step in v.steps:
+                    if step.component not in component_names:
+                        raise ValueError(
+                            f"Step references undefined component: {step.component}"
+                        )
+            # Validate graph-based flows
+            if v.nodes:
+                for node in v.nodes:
+                    if node.component not in component_names:
+                        raise ValueError(
+                            f"Node '{node.id}' references undefined component: "
+                            f"{node.component}"
+                        )
         return v
 
     @property
@@ -208,7 +296,7 @@ class FlowConfig(BaseModel):
     @property
     def steps(self) -> list[StepConfig]:
         """Shortcut to flow steps."""
-        return self.flow.steps
+        return self.flow.steps or []
 
     def get_component_config(self, name: str) -> Optional[ComponentConfig]:
         """Get configuration for a named component.

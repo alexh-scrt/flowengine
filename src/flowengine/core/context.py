@@ -223,6 +223,12 @@ class ExecutionMetadata:
     deadline: Optional[float] = field(default=None, repr=False)
     deadline_checked: bool = field(default=False, repr=False)
 
+    # Suspension support (pause/resume)
+    suspended: bool = False
+    suspended_at_node: Optional[str] = None
+    suspension_reason: Optional[str] = None
+    completed_nodes: list[str] = field(default_factory=list)
+
     # Internal step counter
     _step_counter: int = field(default=0, repr=False)
 
@@ -386,6 +392,9 @@ class FlowContext:
     # Optional initial input
     input: Any = None
 
+    # Port-based routing (transient execution state)
+    _active_port: Optional[str] = field(default=None, repr=False)
+
     def set(self, key: str, value: Any) -> None:
         """Set a value in the data container.
 
@@ -427,6 +436,32 @@ class FlowContext:
         if key in self.data:
             delattr(self.data, key)
 
+    def set_port(self, port: str) -> None:
+        """Set the active output port for the current node.
+
+        Called by components like Condition to signal which branch to take.
+        The graph executor reads this to determine edge routing.
+        """
+        self._active_port = port
+
+    def get_active_port(self) -> Optional[str]:
+        """Get the active output port (used by graph executor)."""
+        return self._active_port
+
+    def clear_port(self) -> None:
+        """Reset active port (called by executor between nodes)."""
+        self._active_port = None
+
+    def suspend(self, node_id: str, reason: str = "") -> None:
+        """Suspend execution at the current node.
+
+        Called by components like HumanApproval to pause the workflow.
+        The executor checks metadata.suspended after each node.
+        """
+        self.metadata.suspended = True
+        self.metadata.suspended_at_node = node_id
+        self.metadata.suspension_reason = reason
+
     def to_dict(self) -> dict[str, Any]:
         """Convert context to dictionary.
 
@@ -458,6 +493,10 @@ class FlowContext:
                 "skipped_components": self.metadata.skipped_components,
                 "errors": self.metadata.errors,
                 "condition_errors": self.metadata.condition_errors,
+                "suspended": self.metadata.suspended,
+                "suspended_at_node": self.metadata.suspended_at_node,
+                "suspension_reason": self.metadata.suspension_reason,
+                "completed_nodes": self.metadata.completed_nodes,
             },
             "input": self.input,
         }
@@ -529,6 +568,18 @@ class FlowContext:
         context.metadata.errors = list(metadata_dict.get("errors", []))
         context.metadata.condition_errors = list(
             metadata_dict.get("condition_errors", [])
+        )
+
+        # Restore suspension state
+        context.metadata.suspended = metadata_dict.get("suspended", False)
+        context.metadata.suspended_at_node = metadata_dict.get(
+            "suspended_at_node", None
+        )
+        context.metadata.suspension_reason = metadata_dict.get(
+            "suspension_reason", None
+        )
+        context.metadata.completed_nodes = list(
+            metadata_dict.get("completed_nodes", [])
         )
 
         return context
