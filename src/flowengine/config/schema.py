@@ -42,6 +42,14 @@ class FlowSettings(BaseModel):
             - "fail": Raise ConditionEvaluationError (default)
             - "skip": Skip the step and record the error
             - "warn": Log a warning and skip the step
+        max_iterations: Maximum number of loop iterations for cyclic graphs.
+            Default 10. Range: 1-1000.
+        on_max_iterations: Policy when max_iterations is reached:
+            - "fail": Raise MaxIterationsError (default)
+            - "exit": Silently stop execution
+            - "warn": Log a warning and stop execution
+        convergence_check: Reserved for v0.3.1. Enable convergence detection.
+        convergence_keys: Reserved for v0.3.1. Context keys to check for convergence.
     """
 
     fail_fast: bool = Field(
@@ -70,6 +78,24 @@ class FlowSettings(BaseModel):
     on_condition_error: Literal["fail", "skip", "warn"] = Field(
         default="fail",
         description="How to handle condition evaluation errors",
+    )
+    max_iterations: int = Field(
+        default=10,
+        description="Maximum loop iterations for cyclic graphs",
+        ge=1,
+        le=1000,
+    )
+    on_max_iterations: Literal["fail", "exit", "warn"] = Field(
+        default="fail",
+        description="Policy when max_iterations is reached in cyclic graphs",
+    )
+    convergence_check: bool = Field(
+        default=False,
+        description="Reserved for v0.3.1: enable convergence detection",
+    )
+    convergence_keys: list[str] = Field(
+        default_factory=list,
+        description="Reserved for v0.3.1: context keys to check for convergence",
     )
 
 
@@ -106,6 +132,8 @@ class GraphNodeConfig(BaseModel):
         component: References a component name
         description: Human-readable node description
         on_error: How to handle errors (fail/skip/continue)
+        max_visits: Maximum times this node can execute in cyclic graphs.
+            None means use the flow-level max_iterations setting.
     """
 
     id: str = Field(..., description="Unique node ID within the graph")
@@ -117,6 +145,10 @@ class GraphNodeConfig(BaseModel):
     on_error: Literal["fail", "skip", "continue"] = Field(
         default="fail",
         description="Error handling behavior",
+    )
+    max_visits: Optional[int] = Field(
+        default=None,
+        description="Max executions in cyclic graphs (None = use flow max_iterations)",
     )
 
 

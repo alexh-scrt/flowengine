@@ -293,6 +293,41 @@ class GraphExecutor:
 
         return targets
 
+    def _detect_cycles(self) -> tuple[bool, set[tuple[str, str]]]:
+        """Detect cycles and identify back-edges using DFS.
+
+        Uses white/gray/black coloring:
+        - WHITE: unvisited
+        - GRAY: currently in DFS stack (ancestor)
+        - BLACK: fully explored
+
+        An edge to a GRAY node is a back-edge (creates a cycle).
+
+        Returns:
+            Tuple of (has_cycles, back_edges) where back_edges is a set of
+            (source_id, target_id) tuples that create cycles.
+        """
+        white, gray, black = 0, 1, 2
+        color: dict[str, int] = dict.fromkeys(self._nodes, white)
+        back_edges: set[tuple[str, str]] = set()
+
+        def dfs(node_id: str) -> None:
+            color[node_id] = gray
+            for edge in self._forward.get(node_id, []):
+                target = edge.target
+                if color[target] == gray:
+                    # Back-edge: target is an ancestor in current DFS path
+                    back_edges.add((node_id, target))
+                elif color[target] == white:
+                    dfs(target)
+            color[node_id] = black
+
+        for node_id in self._nodes:
+            if color[node_id] == white:
+                dfs(node_id)
+
+        return (len(back_edges) > 0, back_edges)
+
     def _notify(self, method: str, *args: Any, **kwargs: Any) -> None:
         """Notify all registered hooks."""
         for hook in self._hooks:

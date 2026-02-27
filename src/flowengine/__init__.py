@@ -68,6 +68,7 @@ from flowengine.errors import (
     FlowEngineError,
     FlowExecutionError,
     FlowTimeoutError,
+    MaxIterationsError,
 )
 
 # Contrib components
@@ -115,6 +116,7 @@ __all__ = [
     "ConfigurationError",
     "FlowExecutionError",
     "FlowTimeoutError",
+    "MaxIterationsError",
     "DeadlineCheckError",
     "ComponentError",
     "ConditionEvaluationError",

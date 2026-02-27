@@ -11,6 +11,7 @@ from flowengine.errors.exceptions import (
     FlowEngineError,
     FlowExecutionError,
     FlowTimeoutError,
+    MaxIterationsError,
 )
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "ConfigurationError",
     "FlowExecutionError",
     "FlowTimeoutError",
+    "MaxIterationsError",
     "DeadlineCheckError",
     "ComponentError",
     "ConditionEvaluationError",

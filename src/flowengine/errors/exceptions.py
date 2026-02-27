@@ -145,6 +145,30 @@ class FlowTimeoutError(FlowExecutionError):
         super().__init__(message, flow_id=flow_id, step=step)
 
 
+class MaxIterationsError(FlowExecutionError):
+    """Raised when a cyclic graph exceeds max_iterations.
+
+    Attributes:
+        max_iterations: The configured iteration limit
+        actual_iterations: How many iterations were attempted
+        cycle_entry_node: The node ID where the cycle re-enters
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        max_iterations: int,
+        actual_iterations: int,
+        cycle_entry_node: str,
+        flow_id: Optional[str] = None,
+    ) -> None:
+        self.max_iterations = max_iterations
+        self.actual_iterations = actual_iterations
+        self.cycle_entry_node = cycle_entry_node
+        super().__init__(message, flow_id=flow_id, step=cycle_entry_node)
+
+
 class DeadlineCheckError(FlowExecutionError):
     """Error when component fails to check deadline.
 

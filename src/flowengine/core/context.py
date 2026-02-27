@@ -229,6 +229,13 @@ class ExecutionMetadata:
     suspension_reason: Optional[str] = None
     completed_nodes: list[str] = field(default_factory=list)
 
+    # Cyclic graph execution tracking
+    node_visit_counts: dict[str, int] = field(default_factory=dict)
+    iteration_count: int = 0
+    loop_timings: list[dict[str, Any]] = field(default_factory=list)
+    max_iterations_reached: bool = False
+    converged: bool = False  # Reserved for v0.3.1
+
     # Internal step counter
     _step_counter: int = field(default=0, repr=False)
 
@@ -497,6 +504,11 @@ class FlowContext:
                 "suspended_at_node": self.metadata.suspended_at_node,
                 "suspension_reason": self.metadata.suspension_reason,
                 "completed_nodes": self.metadata.completed_nodes,
+                "node_visit_counts": self.metadata.node_visit_counts,
+                "iteration_count": self.metadata.iteration_count,
+                "loop_timings": self.metadata.loop_timings,
+                "max_iterations_reached": self.metadata.max_iterations_reached,
+                "converged": self.metadata.converged,
             },
             "input": self.input,
         }
@@ -581,6 +593,19 @@ class FlowContext:
         context.metadata.completed_nodes = list(
             metadata_dict.get("completed_nodes", [])
         )
+
+        # Restore cyclic graph execution state
+        context.metadata.node_visit_counts = dict(
+            metadata_dict.get("node_visit_counts", {})
+        )
+        context.metadata.iteration_count = metadata_dict.get("iteration_count", 0)
+        context.metadata.loop_timings = list(
+            metadata_dict.get("loop_timings", [])
+        )
+        context.metadata.max_iterations_reached = metadata_dict.get(
+            "max_iterations_reached", False
+        )
+        context.metadata.converged = metadata_dict.get("converged", False)
 
         return context
 
