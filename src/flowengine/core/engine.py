@@ -73,6 +73,19 @@ class ExecutionHook(Protocol):
         self, node_id: str, reason: str, checkpoint_id: str | None
     ) -> None: ...
 
+    def on_iteration_start(
+        self, iteration: int, cycle_entry_node: str, context: FlowContext
+    ) -> None: ...
+
+    def on_iteration_complete(
+        self, iteration: int, cycle_entry_node: str, context: FlowContext,
+        duration: float,
+    ) -> None: ...
+
+    def on_max_iterations(
+        self, max_iterations: int, cycle_entry_node: str, context: FlowContext
+    ) -> None: ...
+
 
 class FlowEngine:
     """Executes a flow defined by a configuration.
@@ -772,7 +785,6 @@ class FlowEngine:
         context = context or FlowContext()
 
         if self.flow_type == "graph":
-            # For graph flows, return topological order
             from flowengine.core.graph import GraphExecutor
 
             executor = GraphExecutor(
@@ -781,6 +793,9 @@ class FlowEngine:
                 components=self.components,
                 settings=self.config.flow.settings,
             )
+            if executor._has_cycles:
+                # Cyclic graphs can't be topologically sorted; return all nodes
+                return [n.component for n in (self.config.flow.nodes or [])]
             order = executor._topological_sort()
             return [
                 self.config.flow.nodes[

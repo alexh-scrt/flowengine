@@ -306,7 +306,8 @@ class TestGraphValidation:
         with pytest.raises(Exception):
             FlowDefinition(type="graph", nodes=[], edges=[])
 
-    def test_cycle_detection(self):
+    def test_cycle_executes_with_max_iterations(self):
+        """Previously rejected as 'Cycle detected', now executes with loop limit."""
         config = _make_config(
             nodes=[
                 {"id": "a", "component": "comp_a"},
@@ -320,14 +321,20 @@ class TestGraphValidation:
                 {"name": "comp_a", "type": "t.A"},
                 {"name": "comp_b", "type": "t.B"},
             ],
+            settings={"timeout_seconds": 60, "max_iterations": 3,
+                       "on_max_iterations": "exit"},
         )
         instances = {
             "comp_a": AppendComponent("comp_a"),
             "comp_b": AppendComponent("comp_b"),
         }
         engine = _build_engine(config, instances)
-        with pytest.raises(ConfigurationError, match="Cycle detected"):
-            engine.execute()
+        result = engine.execute()
+
+        order = result.get("order")
+        # Should have run more than one pass
+        assert len(order) > 2
+        assert result.metadata.iteration_count <= 3
 
     def test_edge_references_missing_node(self):
         with pytest.raises(Exception, match="not found in nodes"):
