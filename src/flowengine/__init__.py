@@ -29,7 +29,7 @@ Example:
     ```
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.1"
 
 # Core classes
 from flowengine.core.component import BaseComponent

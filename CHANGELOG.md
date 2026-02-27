@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-02-27
+
+### Fixed
+
+- **`on_iteration_complete` hook now fires** — called after each iteration finishes (at back-edge re-entry for the previous iteration, and at natural loop exit for the final iteration). Includes iteration number, cycle entry node, context, and duration.
+- **`on_max_iterations` hook now fires** — called when the iteration limit is reached, before the policy (fail/exit/warn) is applied. Includes max_iterations value, cycle entry node, and context.
+
 ## [0.4.0] - 2026-02-27
 
 ### Added

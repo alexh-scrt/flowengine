@@ -1476,6 +1476,94 @@ class TestCyclicHooks:
         # on_iteration_start should have been called
         assert hook.on_iteration_start.called
 
+    def test_on_iteration_complete_fires(self):
+        """on_iteration_complete hook fires when an iteration finishes."""
+        hook = MagicMock()
+        executor = _build_executor(
+            nodes=[{"id": "a", "component": "ca"}, {"id": "b", "component": "cb"}],
+            edges=[{"source": "a", "target": "b"}, {"source": "b", "target": "a"}],
+            instances={"ca": AppendComponent("ca"), "cb": AppendComponent("cb")},
+            settings={"timeout_seconds": 60, "max_iterations": 3,
+                       "on_max_iterations": "exit"},
+            hooks=[hook],
+        )
+        context = FlowContext()
+        executor.execute(context)
+
+        # on_iteration_complete should have been called
+        assert hook.on_iteration_complete.called
+        # Each call should include iteration number, node_id, context, duration
+        for call in hook.on_iteration_complete.call_args_list:
+            args = call[0]
+            assert isinstance(args[0], int)   # iteration
+            assert isinstance(args[1], str)   # cycle_entry_node
+            assert isinstance(args[3], float)  # duration >= 0
+
+    def test_on_iteration_complete_covers_all_iterations(self):
+        """on_iteration_complete fires for every iteration including the final one.
+
+        on_iteration_start fires N times (at back-edge re-entry).
+        on_iteration_complete fires N+1 times (N at re-entry for the *previous*
+        iteration + 1 for the final iteration when the queue empties).
+        """
+        hook = MagicMock()
+        executor = _build_executor(
+            nodes=[{"id": "a", "component": "ca"}, {"id": "b", "component": "cb"}],
+            edges=[{"source": "a", "target": "b"}, {"source": "b", "target": "a"}],
+            instances={"ca": AppendComponent("ca"), "cb": AppendComponent("cb")},
+            settings={"timeout_seconds": 60, "max_iterations": 3,
+                       "on_max_iterations": "exit"},
+            hooks=[hook],
+        )
+        context = FlowContext()
+        executor.execute(context)
+
+        # complete fires one more than start (final iteration end)
+        assert hook.on_iteration_complete.call_count == hook.on_iteration_start.call_count + 1
+
+    def test_on_max_iterations_hook_fires(self):
+        """on_max_iterations hook fires when iteration limit is reached."""
+        hook = MagicMock()
+        executor = _build_executor(
+            nodes=[
+                {"id": "a", "component": "ca", "max_visits": 100},
+                {"id": "b", "component": "cb", "max_visits": 100},
+            ],
+            edges=[{"source": "a", "target": "b"}, {"source": "b", "target": "a"}],
+            instances={"ca": AppendComponent("ca"), "cb": AppendComponent("cb")},
+            settings={"timeout_seconds": 60, "max_iterations": 2,
+                       "on_max_iterations": "exit"},
+            hooks=[hook],
+        )
+        context = FlowContext()
+        executor.execute(context)
+
+        assert hook.on_max_iterations.called
+        args = hook.on_max_iterations.call_args[0]
+        assert args[0] == 2  # max_iterations value
+        assert isinstance(args[1], str)  # cycle_entry_node
+
+    def test_on_max_iterations_hook_fires_before_exception(self):
+        """on_max_iterations hook fires even when policy is 'fail'."""
+        hook = MagicMock()
+        executor = _build_executor(
+            nodes=[
+                {"id": "a", "component": "ca", "max_visits": 100},
+                {"id": "b", "component": "cb", "max_visits": 100},
+            ],
+            edges=[{"source": "a", "target": "b"}, {"source": "b", "target": "a"}],
+            instances={"ca": AppendComponent("ca"), "cb": AppendComponent("cb")},
+            settings={"timeout_seconds": 60, "max_iterations": 2,
+                       "on_max_iterations": "fail"},
+            hooks=[hook],
+        )
+        context = FlowContext()
+        with pytest.raises(MaxIterationsError):
+            executor.execute(context)
+
+        # Hook should still have fired before the exception
+        assert hook.on_max_iterations.called
+
     def test_on_node_start_fires_each_visit(self):
         """on_node_start fires for every node visit in cycle."""
         hook = MagicMock()
@@ -1540,6 +1628,8 @@ class TestCyclicHooks:
         hook.on_node_start.side_effect = RuntimeError("Hook exploded")
         hook.on_node_complete.side_effect = RuntimeError("Hook exploded")
         hook.on_iteration_start.side_effect = RuntimeError("Hook exploded")
+        hook.on_iteration_complete.side_effect = RuntimeError("Hook exploded")
+        hook.on_max_iterations.side_effect = RuntimeError("Hook exploded")
 
         executor = _build_executor(
             nodes=[{"id": "a", "component": "ca"}, {"id": "b", "component": "cb"}],

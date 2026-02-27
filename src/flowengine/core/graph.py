@@ -284,6 +284,8 @@ class GraphExecutor:
         else:
             ready_queue.extend(roots)
 
+        iter_start: float | None = None  # Track iteration start for duration
+
         while ready_queue:
             node_id = ready_queue.popleft()
             node = self._nodes[node_id]
@@ -296,10 +298,18 @@ class GraphExecutor:
             # 2. Check iteration limit (only at back-edge targets that have
             #    already been visited — first visit is not a "loop")
             if node_id in self._back_edge_targets and visit_counts.get(node_id, 0) > 0:
+                # The previous iteration just completed
+                iter_end = time.time()
+                self._notify(
+                    "on_iteration_complete", iteration, node_id, context,
+                    iter_end - (iter_start if iter_start else flow_start_time),
+                )
+
                 iteration += 1
                 context.metadata.iteration_count = iteration
+                iter_start = time.time()
 
-                # Fire iteration hooks
+                # Fire iteration start hook
                 self._notify("on_iteration_start", iteration, node_id, context)
 
                 if iteration > self._settings.max_iterations:
@@ -332,6 +342,19 @@ class GraphExecutor:
             active_port = context.get_active_port()
             for target in self._get_reachable_targets(node_id, active_port):
                 ready_queue.append(target)
+
+        # Fire on_iteration_complete for the final iteration (natural exit)
+        if iteration > 0 and not context.metadata.suspended:
+            iter_end = time.time()
+            # Use the last back-edge target as entry node, or first root
+            entry_node = (
+                list(self._back_edge_targets)[0]
+                if self._back_edge_targets else roots[0]
+            )
+            self._notify(
+                "on_iteration_complete", iteration, entry_node, context,
+                iter_end - (iter_start if iter_start else flow_start_time),
+            )
 
         return context
 
@@ -535,6 +558,9 @@ class GraphExecutor:
     ) -> None:
         """Handle reaching max_iterations based on policy."""
         context.metadata.max_iterations_reached = True
+
+        # Fire on_max_iterations hook before applying policy
+        self._notify("on_max_iterations", self._settings.max_iterations, node_id, context)
 
         if self._settings.on_max_iterations == "fail":
             raise MaxIterationsError(
