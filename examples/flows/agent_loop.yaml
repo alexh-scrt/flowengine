@@ -1,0 +1,47 @@
+name: "Agent Loop Example"
+version: "1.0"
+
+components:
+  - name: planner
+    type: examples.agent_loop.PlanComponent
+  - name: executor
+    type: examples.agent_loop.ExecuteComponent
+  - name: observer
+    type: examples.agent_loop.ObserveComponent
+  - name: evaluator
+    type: examples.agent_loop.EvaluateComponent
+    config:
+      quality_threshold: 3
+  - name: deliverer
+    type: examples.agent_loop.DeliverComponent
+
+flow:
+  type: graph
+  settings:
+    timeout_seconds: 30
+    max_iterations: 10
+    on_max_iterations: exit
+  nodes:
+    - id: plan
+      component: planner
+    - id: execute
+      component: executor
+    - id: observe
+      component: observer
+    - id: evaluate
+      component: evaluator
+    - id: deliver
+      component: deliverer
+  edges:
+    - source: plan
+      target: execute
+    - source: execute
+      target: observe
+    - source: observe
+      target: evaluate
+    - source: evaluate
+      target: plan
+      port: refine
+    - source: evaluate
+      target: deliver
+      port: done

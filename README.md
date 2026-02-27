@@ -9,6 +9,7 @@ FlowEngine enables developers to define execution flows declaratively in YAML, b
 - **YAML-Driven Configuration** — Define flows in human-readable YAML files
 - **Component-Based Architecture** — Build reusable, testable processing units
 - **Graph-Based DAG Execution** — Define flows as directed acyclic graphs with topological ordering
+- **Cyclic Graph Execution** — Build agentic loops with iteration limits and port-based exit conditions
 - **Port-Based Output Routing** — Components route execution through named output ports
 - **Conditional Execution** — Execute steps based on runtime context state
 - **Async Component Support** — Native async processing with automatic sync fallback
@@ -201,6 +202,8 @@ flow:
 | `timeout_mode` | `cooperative` | Timeout enforcement: `cooperative`, `hard_async`, `hard_process` |
 | `require_deadline_check` | `false` | Require components to call `check_deadline()` in cooperative mode |
 | `on_condition_error` | `fail` | How to handle invalid conditions: `fail` (raise exception), `skip` (skip step), `warn` (log and skip) |
+| `max_iterations` | `10` | Maximum loop iterations for cyclic graphs |
+| `on_max_iterations` | `"fail"` | Policy when max iterations reached: `fail`, `exit`, `warn` |
 
 ## Flow Types
 
@@ -273,11 +276,75 @@ flow:
 
 Nodes execute in topological order. Port-based edges enable conditional routing — components call `set_output_port(context, "valid")` to choose a branch.
 
+### Cyclic Graph (Agent Loops) — v0.3.0
+
+Define flows with **cycles** for iterative agent patterns. The graph executor automatically detects cycles and switches to a ready-queue BFS executor with iteration limits.
+
+```yaml
+flow:
+  type: graph
+  settings:
+    max_iterations: 10          # Safety limit for loop iterations
+    on_max_iterations: exit     # fail | exit | warn
+  nodes:
+    - id: plan
+      component: planner
+    - id: execute
+      component: executor
+    - id: evaluate
+      component: evaluator
+    - id: deliver
+      component: deliverer
+  edges:
+    - source: plan
+      target: execute
+    - source: execute
+      target: evaluate
+    - source: evaluate
+      target: plan
+      port: "refine"            # Loop back when more work needed
+    - source: evaluate
+      target: deliver
+      port: "done"              # Exit loop when quality threshold met
+```
+
+The evaluator component uses port-based routing to either loop back (`refine`) or exit to delivery (`done`):
+
+```python
+class EvaluateComponent(BaseComponent):
+    def process(self, context: FlowContext) -> FlowContext:
+        quality = context.get("quality_score", 0)
+        threshold = self.config.get("quality_threshold", 3)
+
+        if quality >= threshold:
+            self.set_output_port(context, "done")
+        else:
+            self.set_output_port(context, "refine")
+
+        return context
+```
+
+After execution, cyclic metadata is available:
+
+```python
+result = engine.execute()
+print(result.metadata.iteration_count)        # Number of loop iterations
+print(result.metadata.node_visit_counts)      # Per-node execution counts
+print(result.metadata.max_iterations_reached) # Whether limit was hit
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `max_iterations` | `10` | Maximum loop iterations before policy triggers |
+| `on_max_iterations` | `"fail"` | `fail` (raise `MaxIterationsError`), `exit` (stop silently), `warn` (log + stop) |
+| `max_visits` (per-node) | `None` | Cap individual node executions (defaults to `max_iterations`) |
+
 | Flow Type | Behavior | Use Case |
 |-----------|----------|----------|
 | `sequential` | All matching steps run | Data pipelines, multi-step processing |
 | `conditional` | First match wins, then stop | Request routing, dispatch, mutually exclusive branches |
-| `graph` | DAG with port-based routing | Complex workflows, agent orchestration, approval flows |
+| `graph` (DAG) | DAG with port-based routing | Complex workflows, approval flows |
+| `graph` (cyclic) | Loops with iteration limits | Agent loops, iterative refinement, agentic AI patterns |
 
 ## Conditional Step Execution
 
@@ -720,6 +787,7 @@ print(result.data.api.data)  # Response JSON
 | `ConfigurationError` | Invalid configuration |
 | `FlowExecutionError` | Runtime execution error |
 | `FlowTimeoutError` | Flow exceeded timeout_seconds |
+| `MaxIterationsError` | Cyclic graph exceeded max_iterations (with on_max_iterations=fail) |
 | `DeadlineCheckError` | Component didn't call check_deadline() (with require_deadline_check=True) |
 | `ComponentError` | Component processing error |
 | `ConditionEvaluationError` | Invalid/unsafe condition |
@@ -733,6 +801,7 @@ See the `examples/` directory for complete examples:
 - `routing_flow.py` — Conditional flow with first-match branching
 - `timeout_modes.py` — Timeout enforcement modes (cooperative, hard_async, hard_process)
 - `custom_components.py` — Advanced component patterns
+- `agent_loop.py` — Cyclic graph agent loop with iterative refinement (v0.3.0)
 
 Run examples:
 
@@ -743,6 +812,7 @@ python conditional_flow.py
 python routing_flow.py
 python timeout_modes.py
 python custom_components.py
+python agent_loop.py
 ```
 
 ## Development

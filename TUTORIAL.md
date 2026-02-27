@@ -43,6 +43,13 @@
   - [8.4 Execution Checkpoints (Suspend/Resume)](#84-execution-checkpoints-suspendresume)
   - [8.5 Step Lifecycle Hooks](#85-step-lifecycle-hooks)
   - [Exercise 8: Build an Approval Workflow](#exercise-8-build-an-approval-workflow)
+- [Part 9: Cyclic Graph Execution — Agent Loops (v0.3.0)](#part-9-cyclic-graph-execution--agent-loops-v030)
+  - [9.1 From DAGs to Cycles](#91-from-dags-to-cycles)
+  - [9.2 Building an Agent Loop](#92-building-an-agent-loop)
+  - [9.3 Iteration Limits and Policies](#93-iteration-limits-and-policies)
+  - [9.4 Cyclic Execution Metadata](#94-cyclic-execution-metadata)
+  - [9.5 Execution Hooks for Cycles](#95-execution-hooks-for-cycles)
+  - [Exercise 9: Build a Research Agent](#exercise-9-build-a-research-agent)
 - [Appendix A: Complete YAML Examples](#appendix-a-complete-yaml-examples)
 - [Appendix B: Common Patterns Cheat Sheet](#appendix-b-common-patterns-cheat-sheet)
 - [Appendix C: Troubleshooting Guide](#appendix-c-troubleshooting-guide)
@@ -4337,6 +4344,300 @@ Build a complete approval workflow using graph flows, suspension, and hooks:
 
 ---
 
+---
+
+# Part 9: Cyclic Graph Execution — Agent Loops (v0.3.0)
+
+FlowEngine v0.3.0 adds support for **cyclic graphs** — graphs with loops. This enables the core agentic AI pattern: `plan → act → observe → decide → loop`.
+
+## 9.1 From DAGs to Cycles
+
+In v0.2.0, graph flows were restricted to **directed acyclic graphs** (DAGs). Any cycle was rejected with a `ConfigurationError`. In v0.3.0, cycles are automatically detected and the executor switches to a **ready-queue BFS** strategy that handles loops safely.
+
+```
+DAG (v0.2.0):                  Cyclic (v0.3.0):
+
+  A → B → C                     A → B → C → D
+                                       ↑       │
+                                       └───────┘
+                                    (back-edge: D → A)
+```
+
+**Key difference:** DAG flows use topological sorting (Kahn's algorithm). Cyclic flows use a ready-queue BFS with iteration counting at back-edge targets.
+
+**Zero breaking changes:** If your graph has no cycles, execution is identical to v0.2.0.
+
+---
+
+## 9.2 Building an Agent Loop
+
+The most common cyclic pattern is an **agent loop** — a cycle where a decision component routes back to the start until some quality threshold is met.
+
+### Step 1: Define the Components
+
+```python
+from flowengine import BaseComponent, FlowContext
+
+
+class PlanComponent(BaseComponent):
+    """Plans the next research action."""
+
+    def process(self, context: FlowContext) -> FlowContext:
+        iteration = context.get("iteration", 0) + 1
+        context.set("iteration", iteration)
+        context.set("plan", f"Research plan v{iteration}")
+        return context
+
+
+class ExecuteComponent(BaseComponent):
+    """Executes the plan, accumulates results."""
+
+    def process(self, context: FlowContext) -> FlowContext:
+        results = context.get("results", [])
+        results.append(f"finding-{context.get('iteration', 1)}")
+        context.set("results", results)
+        return context
+
+
+class EvaluateComponent(BaseComponent):
+    """Evaluates quality. Routes to 'refine' or 'done'."""
+
+    def process(self, context: FlowContext) -> FlowContext:
+        threshold = self.config.get("quality_threshold", 3)
+        quality = len(context.get("results", []))
+
+        if quality >= threshold:
+            self.set_output_port(context, "done")
+        else:
+            self.set_output_port(context, "refine")
+
+        return context
+
+
+class DeliverComponent(BaseComponent):
+    """Delivers the final result."""
+
+    def process(self, context: FlowContext) -> FlowContext:
+        context.set("delivered", True)
+        context.set("final_output", context.get("results", []))
+        return context
+```
+
+### Step 2: Define the YAML Configuration
+
+```yaml
+name: "Agent Loop"
+version: "1.0"
+
+components:
+  - name: planner
+    type: myapp.PlanComponent
+  - name: executor
+    type: myapp.ExecuteComponent
+  - name: evaluator
+    type: myapp.EvaluateComponent
+    config:
+      quality_threshold: 3
+  - name: deliverer
+    type: myapp.DeliverComponent
+
+flow:
+  type: graph
+  settings:
+    timeout_seconds: 30
+    max_iterations: 10
+    on_max_iterations: exit
+  nodes:
+    - id: plan
+      component: planner
+    - id: execute
+      component: executor
+    - id: evaluate
+      component: evaluator
+    - id: deliver
+      component: deliverer
+  edges:
+    - source: plan
+      target: execute
+    - source: execute
+      target: evaluate
+    - source: evaluate
+      target: plan
+      port: refine              # Back-edge: loop when more work needed
+    - source: evaluate
+      target: deliver
+      port: done                # Exit edge: deliver when quality met
+```
+
+The key is the **back-edge** from `evaluate → plan` with `port: refine`. This creates a cycle that FlowEngine detects automatically.
+
+### Step 3: Execute
+
+```python
+from flowengine import ConfigLoader, FlowEngine
+from flowengine.config.registry import ComponentRegistry
+
+config = ConfigLoader.load("agent_loop.yaml")
+
+registry = ComponentRegistry()
+registry.register_class("myapp.PlanComponent", PlanComponent)
+registry.register_class("myapp.ExecuteComponent", ExecuteComponent)
+registry.register_class("myapp.EvaluateComponent", EvaluateComponent)
+registry.register_class("myapp.DeliverComponent", DeliverComponent)
+
+engine = FlowEngine.from_config(config, registry=registry)
+result = engine.execute()
+
+print(result.get("delivered"))      # True
+print(result.get("final_output"))   # ["finding-1", "finding-2", "finding-3"]
+```
+
+The agent loops 3 times (accumulating one finding per iteration), then the evaluator routes to `done` and the deliverer runs.
+
+---
+
+## 9.3 Iteration Limits and Policies
+
+Every cyclic graph has a **maximum iteration limit** to prevent infinite loops.
+
+### Settings
+
+```yaml
+flow:
+  settings:
+    max_iterations: 10           # Default: 10
+    on_max_iterations: fail      # Default: fail
+```
+
+### Policies
+
+| Policy | Behavior | Use Case |
+|--------|----------|----------|
+| `fail` | Raises `MaxIterationsError` | Development, testing — catch bugs early |
+| `exit` | Stops silently, returns partial results | Production — graceful degradation |
+| `warn` | Logs warning, then stops | Monitoring — alerts without crashing |
+
+### Handling MaxIterationsError
+
+```python
+from flowengine.errors import MaxIterationsError
+
+try:
+    result = engine.execute()
+except MaxIterationsError as e:
+    print(f"Hit limit: {e.max_iterations} iterations")
+    print(f"Actual: {e.actual_iterations}")
+    print(f"Cycle entry node: {e.cycle_entry_node}")
+```
+
+### Per-Node Visit Limits
+
+You can also cap individual node executions:
+
+```yaml
+nodes:
+  - id: expensive_step
+    component: heavy_processor
+    max_visits: 5               # This node runs at most 5 times
+```
+
+---
+
+## 9.4 Cyclic Execution Metadata
+
+After executing a cyclic flow, rich metadata is available:
+
+```python
+result = engine.execute()
+
+# Iteration tracking
+print(result.metadata.iteration_count)         # Total iterations completed
+print(result.metadata.max_iterations_reached)  # True if limit was hit
+
+# Per-node visit counts
+for node, count in result.metadata.node_visit_counts.items():
+    print(f"  {node}: visited {count} times")
+
+# Completed nodes (only non-cycle terminal nodes)
+print(result.metadata.completed_nodes)  # e.g., ["deliver"]
+
+# Component timings (aggregated across all visits)
+for name, total in result.metadata.component_timings.items():
+    print(f"  {name}: {total:.4f}s total")
+```
+
+### Serialization
+
+Cyclic state is fully serialized and restored:
+
+```python
+# Serialize
+data = result.to_dict()
+
+# Restore
+from flowengine import FlowContext
+restored = FlowContext.from_dict(data)
+
+assert restored.metadata.node_visit_counts == result.metadata.node_visit_counts
+assert restored.metadata.iteration_count == result.metadata.iteration_count
+```
+
+---
+
+## 9.5 Execution Hooks for Cycles
+
+v0.3.0 adds three new hook methods for observing cyclic execution:
+
+```python
+class CycleMonitorHook:
+    def on_iteration_start(self, iteration, context):
+        print(f"Starting iteration {iteration}")
+
+    def on_iteration_complete(self, iteration, context):
+        print(f"Completed iteration {iteration}")
+
+    def on_max_iterations(self, iteration, policy, context):
+        print(f"Max iterations ({iteration}) reached — policy: {policy}")
+
+    # Existing hooks still work:
+    def on_node_start(self, node_id, component_name, context):
+        print(f"  Executing: {node_id}")
+
+hook = CycleMonitorHook()
+engine = FlowEngine.from_config(config, registry=registry, hooks=[hook])
+result = engine.execute()
+```
+
+| Hook Method | When Called | Arguments |
+|-------------|-----------|-----------|
+| `on_iteration_start` | At each back-edge target re-entry | `iteration, context` |
+| `on_iteration_complete` | After all nodes in an iteration | `iteration, context` |
+| `on_max_iterations` | When iteration limit is reached | `iteration, policy, context` |
+
+---
+
+## Exercise 9: Build a Research Agent
+
+Build an agent that searches for information iteratively:
+
+1. **SearchComponent**: Searches for a topic, appends results to context
+2. **AnalyzeComponent**: Analyzes accumulated results, sets a confidence score
+3. **DecideComponent**: Routes to `search_more` if confidence < 0.8, or `report` if >= 0.8
+4. **ReportComponent**: Generates final report from accumulated results
+
+**Requirements:**
+- Use `max_iterations: 5` with `on_max_iterations: exit` for safety
+- The DecideComponent should use `set_output_port()` to route
+- Add a hook that prints iteration progress
+- Verify `result.metadata.iteration_count` matches expected loop count
+
+**Hints:**
+- The back-edge is from `decide → search` with `port: search_more`
+- The exit edge is from `decide → report` with `port: report`
+- Simulate confidence by using `len(results) / 5.0`
+
+---
+
 ## Summary
 
 This tutorial covered:
@@ -4349,7 +4650,8 @@ This tutorial covered:
 6. **Built-in Components:** LoggingComponent, HTTPComponent
 7. **Testing:** Unit tests, integration tests, debugging
 8. **v0.2.0 Features:** Graph DAG execution, port routing, async components, checkpoints, hooks
+9. **v0.3.0 Features:** Cyclic graph execution, agent loops, iteration limits, cyclic metadata, cycle hooks
 
-FlowEngine enables you to build maintainable, observable, and resilient data pipelines with a declarative YAML-driven approach. Start simple, add complexity as needed, and leverage the rich metadata to understand your flow's behavior.
+FlowEngine enables you to build maintainable, observable, and resilient data pipelines and agentic AI workflows with a declarative YAML-driven approach. Start simple, add complexity as needed, and leverage the rich metadata to understand your flow's behavior.
 
 **Happy flowing!**

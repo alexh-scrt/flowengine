@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-02-27
+
+### Added
+
+- **Cyclic Graph Execution** (`max_iterations` + ready-queue BFS)
+  - Graphs with cycles are now executed via a ready-queue BFS executor
+  - Cycle detection via DFS with white/gray/black coloring identifies back-edges
+  - Iteration counting at back-edge targets with configurable `max_iterations` limit
+  - Three `on_max_iterations` policies: `fail` (raise `MaxIterationsError`), `exit` (silent stop), `warn` (log + stop)
+  - Per-node `max_visits` limit to cap individual node executions
+  - DAG fast path preserved untouched — zero behavioral change for acyclic graphs
+
+- **`MaxIterationsError` Exception**
+  - New exception with `max_iterations`, `actual_iterations`, and `cycle_entry_node` attributes
+  - Raised when `on_max_iterations: fail` and the iteration limit is reached
+
+- **Cyclic Execution Metadata**
+  - `ExecutionMetadata.node_visit_counts`: per-node visit tracking (source of truth for cyclic flows)
+  - `ExecutionMetadata.iteration_count`: total iteration count across all cycles
+  - `ExecutionMetadata.max_iterations_reached`: flag indicating whether the limit was hit
+  - Full round-trip serialization of cyclic state via `to_dict()`/`from_dict()`
+
+- **Execution Hooks for Cycles**
+  - `on_iteration_start(iteration, context)`: called at each iteration boundary
+  - `on_iteration_complete(iteration, context)`: called after each iteration completes
+  - `on_max_iterations(iteration, policy, context)`: called when max iterations is reached
+
+- **Checkpoint/Resume in Cyclic Flows**
+  - Suspend and resume works within cyclic execution paths
+  - Visit counts and iteration state preserved across checkpoint boundaries
+
+- **New Flow Settings**
+  - `max_iterations` (default: 10): maximum iteration count for cyclic graphs
+  - `on_max_iterations` (default: `"fail"`): policy when limit is reached
+  - `max_visits` on `GraphNodeConfig`: per-node visit cap
+
+- **Agent Loop Example** (`examples/agent_loop.py`)
+  - Runnable example demonstrating `plan → execute → observe → evaluate → [refine|deliver]`
+  - YAML configuration in `examples/flows/agent_loop.yaml`
+
+### Changed
+
+- `GraphExecutor.execute()` now dispatches to `_execute_dag()` or `_execute_cyclic()` based on cycle detection
+- Previous `execute()` renamed to `_execute_dag()` (no behavioral change for DAG flows)
+- Shared `_execute_node()` method extracted for both DAG and cyclic paths
+- Cycle-participating nodes are NOT added to `completed_nodes` (only terminal/non-cycle nodes are)
+- `FlowEngine.dry_run()` returns all components for cyclic graphs instead of topological sort
+
 ## [0.2.0] - 2025-02-10
 
 ### Added

@@ -103,7 +103,7 @@ exclude_lines = [
 
 [tool.poetry]
 name = "flowengine"
-version = "0.2.0"
+version = "0.3.0"
 description = "Lightweight YAML-driven workflow engine for Python"
 authors = ["Alex H <alexh@scrtlabs.com>"]
 readme = "README.md"
