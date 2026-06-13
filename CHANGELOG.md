@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-13
+
+Agent-native release: FlowEngine YAML becomes a constrained **Agent Workflow IR**
+that AI agents (and NeuroCore) can generate, validate, run, observe, and repair.
+All additions are non-breaking — existing flows, components, and the public API
+are unchanged. See `design/v0.5.0_agent_native.md`. New API lives under
+`flowengine.agent` and is re-exported from the top-level `flowengine` package.
+
+### Added
+
+- **Component & contract metadata** (`flowengine.agent.meta`)
+  - `ComponentMeta` capability manifest (inputs/outputs/ports/tags/cost/risk/effects/
+    requires_approval/requires_llm); `BaseComponent.get_meta()` (optional, defaults to `None`).
+  - `IOFieldSpec` + top-level `inputs`/`outputs` on `FlowConfig` — a declarative worker contract.
+  - `PortSpec` for declaring named output ports.
+
+- **Machine-readable validation** (`flowengine.agent.issues`, `semantic`, `compiler`)
+  - `FlowIssue` (stable `IssueCode`, document `path`, `suggestion`), `RepairSuggestion`
+    + `JsonPatchOp` (RFC-6902) for self-correcting agents.
+  - `validate_semantics()` — ports declared, reachability, cycle exits, terminal output,
+    input producers, output contract, approval surfacing. Degrades to warnings without metadata.
+  - `FlowCompiler.compile_yaml()` → `CompileResult{valid, flow_config, errors, warnings,
+    normalized_yaml}` with "did you mean" component suggestions.
+
+- **Agent tooling** (`flowengine.agent`)
+  - `explain()`/`FlowPlan` — dry-run plan (execution order, branches, cycles, required
+    components, context I/O).
+  - `AgentTrace.from_context()` — structured run trace (run_id, status, outputs, steps, errors).
+  - `normalize_yaml()` — canonical, diff-friendly YAML.
+  - `build_catalog()` — machine-readable component catalog.
+  - `export_json_schema()` — JSON Schema export (flow/component/graph/component-meta) for
+    constrained generation.
+  - `apply_patch()` — minimal RFC-6902 JSON Patch applier.
+
+- **Safety / sandbox** (`flowengine.agent.policy`)
+  - `ExecutionPolicy` (allow/deny lists, risk & approval gates, resource caps) enforced
+    statically at compile time and at runtime via `apply_to_config()`.
+  - `PolicyViolationError`.
+
+- **Composition**
+  - `FlowTool` — expose a whole flow as a callable, schema-bearing tool (flow-as-tool).
+  - `SubflowComponent` (`flowengine.contrib.subflow`) — run a nested flow as a component,
+    with input/output mapping, namespacing, and recursion guard.
+
+- **Templates, replay & docs**
+  - 7 canonical flow templates + `flowengine.agent.templates` (`list_templates`/`get_template`).
+  - `RunRecord`/`RunStore`/`InMemoryRunStore` + `replay()` for deterministic replay.
+  - `docs/for-agents/` prompt pack (system-prompt, yaml-generation-rules,
+    validation-error-repair, component-selection, safety-policy).
+
+- **CLI** — new `flowengine` console script: `validate`, `plan`, `schema`, `normalize`,
+  `apply-patch`, `components`, `template`, `run`, `replay` (most support `--json`).
+
+- **NeuroCore bridge** — NeuroCore `Skill.get_meta()` now derives a `ComponentMeta` from
+  its `SkillMeta` (`provides→outputs`, `consumes→inputs`, tags/config_schema/requires_llm);
+  `SkillRegistry.component_catalog()` surfaces skills in the FlowEngine catalog. Requires
+  `flowengine>=0.5.0`.
+
 ## [0.4.1] - 2026-02-27
 
 ### Fixed

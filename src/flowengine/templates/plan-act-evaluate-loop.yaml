@@ -1,0 +1,48 @@
+# Template: plan-act-evaluate-loop
+# The canonical agent loop: Plan -> Act -> Observe -> Critique -> Refine/Finish.
+# The critic routes back to refine ("revise") or forward to finish ("done").
+# Cyclic graphs MUST set max_iterations.
+name: plan-act-evaluate-loop
+version: "1.0"
+description: An iterative worker that refines its output until a critic is satisfied.
+inputs:
+  query:
+    type: string
+    required: true
+outputs:
+  answer:
+    type: string
+  citations:
+    type: array
+components:
+  - name: act
+    type: REPLACE_WITH_ACTION_TYPE
+    config: {}
+  - name: critique
+    type: REPLACE_WITH_CRITIC_TYPE
+    config: {}
+  - name: finalize
+    type: REPLACE_WITH_FINALIZER_TYPE
+    config: {}
+flow:
+  type: graph
+  settings:
+    max_iterations: 3
+    on_max_iterations: exit
+    timeout_seconds: 180
+  nodes:
+    - id: act
+      component: act
+    - id: critique
+      component: critique
+    - id: finalize
+      component: finalize
+  edges:
+    - source: act
+      target: critique
+    - source: critique
+      target: act
+      port: revise
+    - source: critique
+      target: finalize
+      port: done

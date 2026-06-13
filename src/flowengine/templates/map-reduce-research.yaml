@@ -1,0 +1,50 @@
+# Template: map-reduce-research
+# Fan out across sources (map), then synthesize (reduce). The fan-out is modeled
+# as parallel branches from a planner that converge on a synthesizer.
+name: map-reduce-research
+version: "1.0"
+description: Research worker that gathers from multiple sources and synthesizes.
+inputs:
+  topic:
+    type: string
+    required: true
+outputs:
+  report:
+    type: string
+  sources:
+    type: array
+components:
+  - name: plan
+    type: REPLACE_WITH_PLANNER_TYPE
+    config: {}
+  - name: gather_a
+    type: REPLACE_WITH_SOURCE_TYPE
+    config: {}
+  - name: gather_b
+    type: REPLACE_WITH_SOURCE_TYPE
+    config: {}
+  - name: synthesize
+    type: REPLACE_WITH_SYNTHESIZER_TYPE
+    config: {}
+flow:
+  type: graph
+  settings:
+    timeout_seconds: 300
+  nodes:
+    - id: plan
+      component: plan
+    - id: gather_a
+      component: gather_a
+    - id: gather_b
+      component: gather_b
+    - id: synthesize
+      component: synthesize
+  edges:
+    - source: plan
+      target: gather_a
+    - source: plan
+      target: gather_b
+    - source: gather_a
+      target: synthesize
+    - source: gather_b
+      target: synthesize

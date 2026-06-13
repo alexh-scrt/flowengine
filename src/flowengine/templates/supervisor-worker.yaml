@@ -1,0 +1,37 @@
+# Template: supervisor-worker
+# A supervisor delegates to specialized sub-workers (as subflows) and assembles
+# the final report. Each worker is a nested flow via SubflowComponent.
+name: supervisor-worker
+version: "1.0"
+description: A supervisor that delegates to specialized worker subflows.
+inputs:
+  goal:
+    type: string
+    required: true
+outputs:
+  report:
+    type: string
+components:
+  - name: research
+    type: flowengine.contrib.subflow.SubflowComponent
+    config:
+      path: ./subflows/research-worker.yaml
+      inputs: {goal: query}
+      outputs: [answer, citations]
+  - name: verify
+    type: flowengine.contrib.subflow.SubflowComponent
+    config:
+      path: ./subflows/verification-worker.yaml
+      inputs: {answer: claim}
+      outputs: [verdict]
+  - name: report
+    type: REPLACE_WITH_REPORT_TYPE
+    config: {}
+flow:
+  type: sequential
+  settings:
+    timeout_seconds: 600
+  steps:
+    - component: research
+    - component: verify
+    - component: report

@@ -1,0 +1,29 @@
+# Template: sequential-task
+# A straight-line worker: each component runs in order, passing context forward.
+# Fill in component types from the component catalog and the input/output contract.
+name: sequential-task
+version: "1.0"
+description: A simple sequential worker that runs steps in order.
+inputs:
+  input_text:
+    type: string
+    required: true
+    description: The primary input to process.
+outputs:
+  result:
+    type: string
+    description: The final result.
+components:
+  - name: step_one
+    type: REPLACE_WITH_COMPONENT_TYPE
+    config: {}
+  - name: step_two
+    type: REPLACE_WITH_COMPONENT_TYPE
+    config: {}
+flow:
+  type: sequential
+  settings:
+    timeout_seconds: 120
+  steps:
+    - component: step_one
+    - component: step_two

@@ -169,6 +169,27 @@ class MaxIterationsError(FlowExecutionError):
         super().__init__(message, flow_id=flow_id, step=cycle_entry_node)
 
 
+class PolicyViolationError(FlowExecutionError):
+    """Raised when a flow violates an execution policy (sandbox).
+
+    Attributes:
+        code: The machine-matchable policy issue code (see
+            ``flowengine.agent.issues.IssueCode``), e.g. "DENIED_COMPONENT".
+        component: The offending component name, if applicable.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: str,
+        component: Optional[str] = None,
+        flow_id: Optional[str] = None,
+    ) -> None:
+        self.code = code
+        self.component = component
+        super().__init__(message, flow_id=flow_id, step=component)
+
+
 class DeadlineCheckError(FlowExecutionError):
     """Error when component fails to check deadline.
 

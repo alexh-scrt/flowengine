@@ -1,0 +1,41 @@
+# Template: human-approval-task
+# A worker that pauses for human approval before a high-risk action. The approval
+# component should call context.suspend(...) so the flow checkpoints and resumes
+# with the human's decision (see FlowEngine resume()).
+name: human-approval-task
+version: "1.0"
+description: A worker that suspends for human approval before acting.
+inputs:
+  request:
+    type: object
+    required: true
+outputs:
+  outcome:
+    type: object
+components:
+  - name: prepare
+    type: REPLACE_WITH_COMPONENT_TYPE
+    config: {}
+  - name: approval_gate
+    type: REPLACE_WITH_HUMAN_APPROVAL_TYPE
+    config: {}
+  - name: act
+    type: REPLACE_WITH_HIGH_RISK_TYPE
+    config: {}
+flow:
+  type: graph
+  settings:
+    timeout_seconds: 600
+  nodes:
+    - id: prepare
+      component: prepare
+    - id: approval_gate
+      component: approval_gate
+    - id: act
+      component: act
+  edges:
+    - source: prepare
+      target: approval_gate
+    - source: approval_gate
+      target: act
+      port: approved

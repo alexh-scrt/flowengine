@@ -1,0 +1,41 @@
+# Template: graph-branching-task
+# A DAG worker that branches on a classifier's output port. Use ports declared
+# by the branching component's manifest (e.g. "match" / "no_match").
+name: graph-branching-task
+version: "1.0"
+description: A graph worker that routes to different handlers based on a decision.
+inputs:
+  query:
+    type: string
+    required: true
+outputs:
+  answer:
+    type: string
+components:
+  - name: classify
+    type: REPLACE_WITH_CLASSIFIER_TYPE
+    config: {}
+  - name: handle_a
+    type: REPLACE_WITH_COMPONENT_TYPE
+    config: {}
+  - name: handle_b
+    type: REPLACE_WITH_COMPONENT_TYPE
+    config: {}
+flow:
+  type: graph
+  settings:
+    timeout_seconds: 120
+  nodes:
+    - id: classify
+      component: classify
+    - id: handle_a
+      component: handle_a
+    - id: handle_b
+      component: handle_b
+  edges:
+    - source: classify
+      target: handle_a
+      port: match
+    - source: classify
+      target: handle_b
+      port: no_match

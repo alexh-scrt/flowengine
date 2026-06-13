@@ -7,6 +7,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from flowengine.agent.meta import IOFieldSpec
+
 
 class ComponentConfig(BaseModel):
     """Configuration for a single component.
@@ -275,6 +277,20 @@ class FlowConfig(BaseModel):
     description: Optional[str] = Field(
         default=None,
         description="Flow description",
+    )
+    inputs: dict[str, IOFieldSpec] = Field(
+        default_factory=dict,
+        description=(
+            "Declared flow inputs (the worker-agent contract). Maps a context "
+            "key to its type/required/description. Optional."
+        ),
+    )
+    outputs: dict[str, IOFieldSpec] = Field(
+        default_factory=dict,
+        description=(
+            "Declared flow outputs the flow promises to produce. Used for "
+            "semantic validation and flow-as-tool schemas. Optional."
+        ),
     )
     components: list[ComponentConfig] = Field(
         ...,

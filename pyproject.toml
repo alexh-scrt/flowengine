@@ -7,7 +7,7 @@ build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "flowengine"
-version = "0.4.1"
+version = "0.5.0"
 description = "Lightweight YAML-driven workflow engine for Python"
 readme = "README.md"
 license = "MIT"
@@ -57,6 +57,9 @@ docs = [
     "mkdocstrings[python]>=0.24",
 ]
 
+[project.scripts]
+flowengine = "flowengine.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/alexh-scrt/flowengine"
 Documentation = "https://flowengine.readthedocs.io"
@@ -103,7 +106,7 @@ exclude_lines = [
 
 [tool.poetry]
 name = "flowengine"
-version = "0.4.1"
+version = "0.5.0"
 description = "Lightweight YAML-driven workflow engine for Python"
 authors = ["Alex H <alexh@scrtlabs.com>"]
 readme = "README.md"

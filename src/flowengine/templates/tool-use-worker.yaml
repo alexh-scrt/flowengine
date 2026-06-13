@@ -1,0 +1,45 @@
+# Template: tool-use-worker
+# A worker that reasons, calls a tool, and incorporates the result. Loop back to
+# reason if more tool calls are needed ("call_tool"), else finish ("answer").
+name: tool-use-worker
+version: "1.0"
+description: A worker that interleaves reasoning with tool calls.
+inputs:
+  task:
+    type: string
+    required: true
+outputs:
+  answer:
+    type: string
+components:
+  - name: reason
+    type: REPLACE_WITH_REASONER_TYPE
+    config: {}
+  - name: tool
+    type: REPLACE_WITH_TOOL_TYPE
+    config: {}
+  - name: respond
+    type: REPLACE_WITH_RESPONDER_TYPE
+    config: {}
+flow:
+  type: graph
+  settings:
+    max_iterations: 5
+    on_max_iterations: exit
+    timeout_seconds: 180
+  nodes:
+    - id: reason
+      component: reason
+    - id: tool
+      component: tool
+    - id: respond
+      component: respond
+  edges:
+    - source: reason
+      target: tool
+      port: call_tool
+    - source: reason
+      target: respond
+      port: answer
+    - source: tool
+      target: reason

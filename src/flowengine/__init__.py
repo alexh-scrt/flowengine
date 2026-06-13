@@ -29,7 +29,7 @@ Example:
     ```
 """
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 
 # Core classes
 from flowengine.core.component import BaseComponent
@@ -69,10 +69,35 @@ from flowengine.errors import (
     FlowExecutionError,
     FlowTimeoutError,
     MaxIterationsError,
+    PolicyViolationError,
+)
+
+# Agent-native API (v0.5.0)
+from flowengine.agent import (
+    AgentTrace,
+    CompileResult,
+    ComponentMeta,
+    ExecutionPolicy,
+    FlowCompiler,
+    FlowIssue,
+    FlowPlan,
+    FlowTool,
+    IOFieldSpec,
+    IssueCode,
+    JsonPatchOp,
+    PortSpec,
+    RepairSuggestion,
+    apply_patch,
+    build_catalog,
+    explain,
+    export_json_schema,
+    normalize_yaml,
+    validate_semantics,
 )
 
 # Contrib components
 from flowengine.contrib.logging import LoggingComponent
+from flowengine.contrib.subflow import SubflowComponent
 
 # HTTPComponent is optional (requires httpx)
 try:
@@ -120,7 +145,29 @@ __all__ = [
     "DeadlineCheckError",
     "ComponentError",
     "ConditionEvaluationError",
+    "PolicyViolationError",
+    # Agent-native API (v0.5.0)
+    "ComponentMeta",
+    "IOFieldSpec",
+    "PortSpec",
+    "FlowIssue",
+    "IssueCode",
+    "RepairSuggestion",
+    "JsonPatchOp",
+    "validate_semantics",
+    "FlowCompiler",
+    "CompileResult",
+    "FlowPlan",
+    "explain",
+    "AgentTrace",
+    "normalize_yaml",
+    "build_catalog",
+    "export_json_schema",
+    "apply_patch",
+    "ExecutionPolicy",
+    "FlowTool",
     # Contrib
     "LoggingComponent",
+    "SubflowComponent",
     *_http_exports,
 ]

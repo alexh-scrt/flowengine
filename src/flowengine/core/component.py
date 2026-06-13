@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import time
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 if TYPE_CHECKING:
+    from flowengine.agent.meta import ComponentMeta
     from flowengine.core.context import FlowContext
 
 
@@ -42,6 +43,12 @@ class BaseComponent(ABC):
                 return context
         ```
     """
+
+    #: Optional capability manifest. Subclasses set this (or override
+    #: :meth:`get_meta`) to declare inputs/outputs/ports/risk so agents can
+    #: discover, validate, and safely compose the component. ``None`` is valid;
+    #: agentic checks that need metadata simply degrade to warnings.
+    meta: ClassVar[Optional["ComponentMeta"]] = None
 
     def __init__(self, name: str) -> None:
         """Initialize component with a name.
@@ -115,6 +122,17 @@ class BaseComponent(ABC):
             context: The current flow context
         """
         pass
+
+    def get_meta(self) -> Optional["ComponentMeta"]:
+        """Return this component's capability manifest, if any.
+
+        Default returns the class-level :attr:`meta`. Override to derive metadata
+        dynamically (e.g. NeuroCore skills derive it from their ``SkillMeta``).
+
+        Returns:
+            A ``ComponentMeta`` describing inputs/outputs/ports/risk, or ``None``.
+        """
+        return self.meta
 
     def validate_config(self) -> list[str]:
         """Validate component configuration.
