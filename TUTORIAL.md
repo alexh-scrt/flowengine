@@ -50,6 +50,15 @@
   - [9.4 Cyclic Execution Metadata](#94-cyclic-execution-metadata)
   - [9.5 Execution Hooks for Cycles](#95-execution-hooks-for-cycles)
   - [Exercise 9: Build a Research Agent](#exercise-9-build-a-research-agent)
+- [Part 10: Agent-Native Workflows (v0.5.0)](#part-10-agent-native-workflows-v050)
+  - [10.1 The Generate → Validate → Repair Loop](#101-the-generate--validate--repair-loop)
+  - [10.2 Declaring Component Metadata](#102-declaring-component-metadata)
+  - [10.3 Flow Contracts and Semantic Validation](#103-flow-contracts-and-semantic-validation)
+  - [10.4 Plan, Trace, and Normalize](#104-plan-trace-and-normalize)
+  - [10.5 Sandboxing with an Execution Policy](#105-sandboxing-with-an-execution-policy)
+  - [10.6 Flow-as-Tool and Subflows](#106-flow-as-tool-and-subflows)
+  - [10.7 The Command-Line Interface](#107-the-command-line-interface)
+  - [Exercise 10: A Self-Repairing Worker Generator](#exercise-10-a-self-repairing-worker-generator)
 - [Appendix A: Complete YAML Examples](#appendix-a-complete-yaml-examples)
 - [Appendix B: Common Patterns Cheat Sheet](#appendix-b-common-patterns-cheat-sheet)
 - [Appendix C: Troubleshooting Guide](#appendix-c-troubleshooting-guide)
@@ -4638,6 +4647,309 @@ Build an agent that searches for information iteratively:
 
 ---
 
+# Part 10: Agent-Native Workflows (v0.5.0)
+
+Up to now you (a human) wrote the YAML. v0.5.0 turns FlowEngine YAML into an
+**Agent Workflow IR**: a constrained language an AI agent can generate, validate,
+run, observe, and repair on its own. The agent never writes Python — it composes
+trusted, pre-built components into validated YAML.
+
+The whole agent-facing API lives under `flowengine.agent` and is re-exported from
+the top-level package. Everything here is **additive** — your existing flows and
+components keep working unchanged.
+
+```
+generate YAML → validate → (repair) → plan → run → observe trace → refine
+```
+
+## 10.1 The Generate → Validate → Repair Loop
+
+The entry point is `FlowCompiler.compile_yaml()`. Unlike `ConfigLoader` (which
+raises a single exception), the compiler returns a **`CompileResult`** with *all*
+problems at once as coded, machine-readable `FlowIssue` objects — each with a
+stable code, a document path, a "did you mean" suggestion, and often a JSON-patch
+repair the agent can apply verbatim.
+
+```python
+from flowengine import FlowCompiler
+
+yaml_text = """
+name: greeter
+components:
+  - name: hello
+    type: flowengine.contrib.logging.LoggingComponen   # typo!
+flow:
+  type: sequential
+  steps:
+    - component: hello
+"""
+
+result = FlowCompiler.compile_yaml(yaml_text)
+print(result.valid)            # False
+for issue in result.errors:
+    print(issue.code.value)    # UNKNOWN_COMPONENT
+    print(issue.path)          # components[0].type
+    print(issue.message)
+```
+
+When an issue carries a `repair`, you can apply it and re-validate. The patch
+list is standard RFC-6902 JSON Patch:
+
+```python
+from flowengine import apply_patch
+import yaml
+
+document = yaml.safe_load(yaml_text)
+for issue in result.errors:
+    if issue.repair:
+        document = apply_patch(document, [op.to_dict() for op in issue.repair.yaml_patch])
+
+result = FlowCompiler.compile_dict(document)   # re-validate
+```
+
+> Tip: pass a `registry` (or `known_components=[...]`) so the compiler can detect
+> unknown component types and suggest the nearest valid name.
+
+## 10.2 Declaring Component Metadata
+
+Agents compose flows far better when components advertise a contract. A component
+opts in by setting a class-level `meta` (a `ComponentMeta`):
+
+```python
+from flowengine import BaseComponent, ComponentMeta, IOFieldSpec, PortSpec, FlowContext
+
+class WebSearch(BaseComponent):
+    meta = ComponentMeta(
+        name="web_search",
+        description="Searches the web and returns ranked results.",
+        inputs={"query": IOFieldSpec(type="string", required=True)},
+        outputs={"search_results": IOFieldSpec(type="array")},
+        ports=[PortSpec(name="success"), PortSpec(name="no_results")],
+        tags=["search", "web"],
+        cost="low",
+        effects=["read_web"],       # risk_level defaults to "low"
+    )
+
+    def process(self, context: FlowContext) -> FlowContext:
+        context.set("search_results", do_search(context.get("query")))
+        return context
+```
+
+Metadata is **optional** — components without it still run, and semantic checks
+that need it simply degrade to warnings (so symbolic, agent-generated flows don't
+produce false errors). Build a machine-readable catalog of registered components:
+
+```python
+from flowengine import ComponentRegistry, build_catalog
+
+reg = ComponentRegistry()
+reg.register_class("web_search", WebSearch)
+for entry in build_catalog(reg):
+    print(entry["type"], entry["inputs"], entry["outputs"], entry["safe_for_agents"])
+```
+
+## 10.3 Flow Contracts and Semantic Validation
+
+Declare a flow's `inputs`/`outputs` at the top level to make it a callable
+worker with a clear contract:
+
+```yaml
+name: research-worker
+inputs:
+  query: {type: string, required: true}
+outputs:
+  answer: {type: string}
+  citations: {type: array}
+components:
+  - {name: search, type: web_search}
+  - {name: summarize, type: llm_summarizer}
+flow:
+  type: graph
+  settings: {max_iterations: 3, on_max_iterations: exit}
+  nodes:
+    - {id: search, component: search}
+    - {id: summarize, component: summarize}
+  edges:
+    - {source: search, target: summarize, port: success}
+    - {source: summarize, target: search, port: revise}
+```
+
+`validate_semantics()` (run automatically by the compiler) checks the things a
+schema can't:
+
+- every edge `port` is declared by its source component's metadata
+- every consumed key has a producer or a flow input (`MISSING_INPUT_PRODUCER`)
+- every declared output is produced by some component (`OUTPUT_NOT_PRODUCED`)
+- no unreachable nodes; cyclic graphs have an exit; the graph has a terminal path
+- high-risk / approval-gated components are surfaced
+
+```python
+from flowengine import validate_semantics
+from flowengine.config.loader import ConfigLoader
+
+config = ConfigLoader.loads(open("research-worker.yaml").read())
+for issue in validate_semantics(config, registry=reg):
+    print(issue.severity, issue.code.value, issue.message)
+```
+
+## 10.4 Plan, Trace, and Normalize
+
+**Plan** — inspect what *would* happen before running:
+
+```python
+from flowengine import explain
+
+plan = explain(config, registry=reg)
+print(plan.execution_order)     # ['search', 'summarize']
+print(plan.possible_cycles)     # True
+print(plan.context_inputs)      # ['query']
+print(plan.context_outputs)     # ['answer', 'citations']
+```
+
+**Trace** — after a run, get an LLM-friendly summary:
+
+```python
+from flowengine import AgentTrace, FlowEngine, FlowContext
+
+engine = FlowEngine.from_config(config, registry=reg)
+result = engine.execute(FlowContext())
+trace = AgentTrace.from_context(result, config)
+print(trace.status)     # "completed" | "suspended" | "error"
+print(trace.outputs)    # narrowed to declared outputs
+print(trace.to_dict())  # full structured trace
+```
+
+**Normalize** — emit canonical, diff-friendly YAML (defaults filled, keys
+ordered, unknown fields dropped):
+
+```python
+from flowengine import normalize_yaml
+print(normalize_yaml(yaml_text))
+```
+
+And export a JSON Schema for constrained generation:
+
+```python
+from flowengine import export_json_schema
+schema = export_json_schema("flow")   # also: "component", "graph", "component-meta"
+```
+
+## 10.5 Sandboxing with an Execution Policy
+
+An agent may generate any YAML, but an `ExecutionPolicy` decides what is allowed
+to **run**. It's enforced statically (at compile time) and at runtime (by
+tightening the settings the engine already honors):
+
+```python
+from flowengine import ExecutionPolicy, FlowCompiler
+
+policy = ExecutionPolicy(
+    max_runtime_seconds=120,
+    max_iterations=5,
+    allowed_components=["web_search", "llm_summarizer"],
+    denied_components=["shell_exec"],
+    require_approval_for=["send_email", "execute_code"],
+    allow_high_risk=False,
+)
+
+# Static gate: policy violations become compile errors.
+result = FlowCompiler.compile_yaml(yaml_text, registry=reg, policy=policy)
+
+# Runtime gate: clamp timeout / max_iterations to the policy before executing.
+safe_config = policy.apply_to_config(config)
+```
+
+Policy violations use the same coded `FlowIssue` machinery: `DENIED_COMPONENT`,
+`NOT_ALLOWLISTED`, `APPROVAL_REQUIRED`, `RISK_EXCEEDS_POLICY`.
+
+## 10.6 Flow-as-Tool and Subflows
+
+A worker flow can itself be a **tool** callable by a parent agent. `FlowTool`
+derives a JSON tool schema from the flow's `inputs` and runs it on demand:
+
+```python
+from flowengine import FlowTool
+
+tool = FlowTool.from_yaml("research-worker.yaml")
+print(tool.tool_schema())          # {"name": "research_worker", "parameters": {...}}
+answer = tool.call(query="what is FlowEngine?")   # {"answer": ..., "citations": [...]}
+```
+
+A flow can also be **nested** inside another as a component via
+`SubflowComponent`, with input/output mapping and a recursion guard:
+
+```yaml
+components:
+  - name: literature_review
+    type: flowengine.contrib.subflow.SubflowComponent
+    config:
+      path: ./subflows/literature-review.yaml
+      inputs: {query: topic}        # parent 'query' -> child 'topic'
+      outputs: [summary, citations] # copy these child keys back to the parent
+      namespace: lit                # optional prefix for copied outputs
+```
+
+The subflow derives its own `ComponentMeta` from the nested flow's contract, so
+it participates in validation like any other component.
+
+## 10.7 The Command-Line Interface
+
+Installing FlowEngine provides the `flowengine` CLI, which exposes the whole loop
+from a shell (every structured command supports `--json`):
+
+```bash
+flowengine validate flow.yaml --json                       # coded issues + repair hints
+flowengine plan flow.yaml --json                           # dry-run execution plan
+flowengine schema --kind flow                              # JSON Schema
+flowengine normalize flow.yaml                             # canonical YAML
+flowengine apply-patch flow.yaml patch.json                # apply JSON-patch repair
+flowengine components --json --module myapp.components      # component catalog
+flowengine template list                                   # canonical templates
+flowengine template show plan-act-evaluate-loop
+flowengine run flow.yaml --input-json '{"query":"..."}'    # run + print agent trace
+flowengine replay run.json --from-node critique            # deterministic replay
+```
+
+Pass `--policy policy.yaml` to `validate`/`run` to enforce a sandbox, and
+`--module pkg.mod` to make your custom components discoverable by the CLI.
+
+There are also seven ready-to-fill **templates** (`sequential-task`,
+`graph-branching-task`, `plan-act-evaluate-loop`, `human-approval-task`,
+`map-reduce-research`, `tool-use-worker`, `supervisor-worker`) and an agent
+**prompt pack** under `docs/for-agents/` (system prompt, YAML generation rules,
+error-repair guide, component selection, safety policy).
+
+---
+
+## Exercise 10: A Self-Repairing Worker Generator
+
+Write a small Python loop that simulates an agent building a worker:
+
+1. Start from intentionally-broken YAML: a component type with a typo and a graph
+   cycle that uses an undeclared port.
+2. Register a couple of metadata-bearing components in a `ComponentRegistry`.
+3. Call `FlowCompiler.compile_yaml(text, registry=reg)`. While `not result.valid`:
+   - Apply every `issue.repair.yaml_patch` you can with `apply_patch()`.
+   - For issues without a repair, print `issue.code`, `issue.path`, and
+     `issue.suggestion` and fix them manually.
+   - Re-validate with `compile_dict()`.
+4. Once valid, call `explain()` and assert the execution order and
+   `context_outputs` match what you expect.
+5. Run it through a `FlowTool` and print the `AgentTrace`.
+
+**Requirements:**
+- Enforce an `ExecutionPolicy(max_iterations=5)` and confirm a flow asking for
+  `max_iterations: 50` is rejected with a `RISK_EXCEEDS_POLICY` repair patch.
+- Use `normalize_yaml()` to store the final, canonical worker.
+
+**Hints:**
+- The unknown-component error includes a `repair` with the corrected value when a
+  close match exists in the registry.
+- `validate_semantics` reports `UNDECLARED_PORT` for the bad edge; fix it to a
+  port the source component declares.
+
+---
+
 ## Summary
 
 This tutorial covered:
@@ -4651,6 +4963,7 @@ This tutorial covered:
 7. **Testing:** Unit tests, integration tests, debugging
 8. **v0.2.0 Features:** Graph DAG execution, port routing, async components, checkpoints, hooks
 9. **v0.3.0 Features:** Cyclic graph execution, agent loops, iteration limits, cyclic metadata, cycle hooks
+10. **v0.5.0 Features:** Agent-native API — compile/repair loop, component metadata, semantic validation, plan/trace/normalize, execution policy, flow-as-tool, subflows, and the `flowengine` CLI
 
 FlowEngine enables you to build maintainable, observable, and resilient data pipelines and agentic AI workflows with a declarative YAML-driven approach. Start simple, add complexity as needed, and leverage the rich metadata to understand your flow's behavior.
 
