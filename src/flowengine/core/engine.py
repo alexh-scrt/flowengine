@@ -364,6 +364,7 @@ class FlowEngine:
             components=self.components,
             settings=self.config.flow.settings,
             hooks=self._hooks,
+            evaluator=self.evaluator,
         )
         return executor.execute(context)
 

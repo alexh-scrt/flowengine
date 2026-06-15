@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-15
+
+Richer graph execution: edge **conditions** and **async** components in the
+`GraphExecutor`. All additions are non-breaking — the synchronous `execute()`
+path is unchanged, and existing flows behave identically.
+
+### Added
+
+- **Edge conditions** — `GraphEdgeConfig` gains an optional `condition` Python
+  expression (evaluated against `context`, e.g. `context.data.score > 0.5`). An
+  edge activates only when its **port matches** *and* its **condition is True**.
+  Evaluation errors follow `FlowSettings.on_condition_error` (`fail` re-raises;
+  `skip`/`warn` deactivate the edge, recording it in
+  `metadata.condition_errors`). `GraphExecutor` now accepts an optional
+  `evaluator` (wired from `FlowEngine.evaluator`).
+- **Async graph execution** — `GraphExecutor.execute_async()` plus async mirrors
+  (`_execute_dag_async`, `_execute_cyclic_async`, `_execute_node_async`) that
+  `await` components whose `process` returns a coroutine. Sync components run
+  inline on the async path too, so a graph may mix sync and async components.
+  Routing, port/condition gating, cyclic/`max_iterations` handling, suspension,
+  and hooks are identical to the sync path — letting higher-level runtimes (e.g.
+  NeuroCore) route async-skill graph flows through the canonical graph engine.
+
+### Notes
+
+- Port-based routing and cyclic execution with `max_iterations` / per-node
+  `max_visits` were already present (v0.2.0 / v0.3.0); this release adds the
+  missing condition + async pieces so realistic conditional, looping, async
+  graphs execute end-to-end.
+
 ## [0.5.0] - 2026-06-13
 
 Agent-native release: FlowEngine YAML becomes a constrained **Agent Workflow IR**

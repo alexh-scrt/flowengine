@@ -157,10 +157,16 @@ class GraphNodeConfig(BaseModel):
 class GraphEdgeConfig(BaseModel):
     """An edge connecting two nodes in a graph flow.
 
+    An edge activates when BOTH hold:
+    - its port matches the source node's active output port (or ``port`` is None), and
+    - its ``condition`` evaluates True against the context (or ``condition`` is None).
+
     Attributes:
         source: Source node ID
         target: Target node ID
         port: Output port name (e.g. "true", "false"). None = unconditional edge.
+        condition: Optional Python expression gating the edge, evaluated against
+            ``context`` (e.g. ``context.get('score') > 0.5``). None = no condition.
     """
 
     source: str = Field(..., description="Source node ID")
@@ -168,6 +174,10 @@ class GraphEdgeConfig(BaseModel):
     port: Optional[str] = Field(
         default=None,
         description="Output port name (e.g. 'true', 'false'). None = unconditional.",
+    )
+    condition: Optional[str] = Field(
+        default=None,
+        description="Python expression gating this edge, evaluated against `context`.",
     )
 
 

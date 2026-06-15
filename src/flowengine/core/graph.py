@@ -7,25 +7,28 @@ a ready-queue executor.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import time
 from collections import deque
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Optional
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 from flowengine.config.schema import FlowSettings, GraphEdgeConfig, GraphNodeConfig
 from flowengine.core.component import BaseComponent
 from flowengine.core.context import FlowContext
 from flowengine.errors import (
     ComponentError,
+    ConditionEvaluationError,
     ConfigurationError,
     FlowExecutionError,
     FlowTimeoutError,
     MaxIterationsError,
 )
+from flowengine.eval.evaluator import ConditionEvaluator
 
 if TYPE_CHECKING:
-    from flowengine.eval.evaluator import ConditionEvaluator
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +53,14 @@ class GraphExecutor:
         components: dict[str, BaseComponent],
         settings: FlowSettings,
         hooks: list[Any] | None = None,
+        evaluator: ConditionEvaluator | None = None,
     ) -> None:
         self._nodes = {n.id: n for n in nodes}
         self._edges = edges
         self._components = components
         self._settings = settings
         self._hooks = hooks or []
+        self._evaluator = evaluator or ConditionEvaluator()
 
         # Adjacency structures
         self._forward: dict[str, list[GraphEdgeConfig]] = {}
@@ -69,14 +74,27 @@ class GraphExecutor:
         }
 
     def execute(self, context: FlowContext) -> FlowContext:
-        """Execute the graph flow.
+        """Execute the graph flow (synchronous components only).
 
         Dispatches to the DAG executor for acyclic graphs, or the cyclic
-        executor for graphs containing cycles.
+        executor for graphs containing cycles. For graphs whose components have
+        async ``process`` coroutines, use :meth:`execute_async`.
         """
         if self._has_cycles:
             return self._execute_cyclic(context)
         return self._execute_dag(context)
+
+    async def execute_async(self, context: FlowContext) -> FlowContext:
+        """Execute the graph flow, awaiting components with coroutine ``process``.
+
+        Mirrors :meth:`execute` but supports both sync and async components: a
+        component whose ``process`` returns a coroutine is awaited; sync
+        components run inline. Routing, port/condition gating, cycle handling,
+        suspension and hooks are identical to the sync path.
+        """
+        if self._has_cycles:
+            return await self._execute_cyclic_async(context)
+        return await self._execute_dag_async(context)
 
     def _execute_node(
         self,
@@ -126,7 +144,7 @@ class GraphExecutor:
         self._notify("on_node_start", node_id, node.component, context)
 
         start_time = time.time()
-        step_started_at = datetime.now(timezone.utc)
+        step_started_at = datetime.now(UTC)
 
         try:
             # Set deadline for cooperative timeout
@@ -158,7 +176,7 @@ class GraphExecutor:
 
             logger.info(f"Completed node {node_id} in {node_elapsed:.3f}s")
 
-        except (FlowTimeoutError,):
+        except FlowTimeoutError:
             node_elapsed = time.time() - start_time
             context.metadata.record_timing(
                 node.component, node_elapsed, step_started_at
@@ -216,7 +234,7 @@ class GraphExecutor:
             if node_id in context.metadata.completed_nodes:
                 logger.debug(f"Skipping already-completed node: {node_id}")
                 # Propagate unconditional edges (we don't know the port from before)
-                reachable_targets = self._get_reachable_targets(node_id, None)
+                reachable_targets = self._get_reachable_targets(node_id, None, context)
                 activated.update(reachable_targets)
                 continue
 
@@ -249,7 +267,7 @@ class GraphExecutor:
 
             # Determine which downstream nodes to activate based on port
             active_port = context.get_active_port()
-            reachable_targets = self._get_reachable_targets(node_id, active_port)
+            reachable_targets = self._get_reachable_targets(node_id, active_port, context)
             activated.update(reachable_targets)
 
         return context
@@ -340,7 +358,7 @@ class GraphExecutor:
 
             # 7. Enqueue downstream based on port routing
             active_port = context.get_active_port()
-            for target in self._get_reachable_targets(node_id, active_port):
+            for target in self._get_reachable_targets(node_id, active_port, context):
                 ready_queue.append(target)
 
         # Fire on_iteration_complete for the final iteration (natural exit)
@@ -356,6 +374,195 @@ class GraphExecutor:
                 iter_end - (iter_start if iter_start else flow_start_time),
             )
 
+        return context
+
+    # ── Async mirrors (support components with coroutine `process`) ──────
+    # These mirror the sync _execute_node/_execute_dag/_execute_cyclic above;
+    # the only behavioral difference is awaiting a coroutine-returning process.
+    # Sync components work here too (a non-coroutine result is used as-is).
+
+    async def _execute_node_async(
+        self,
+        node_id: str,
+        node: GraphNodeConfig,
+        context: FlowContext,
+        flow_start_time: float,
+    ) -> FlowContext:
+        """Async twin of :meth:`_execute_node` (awaits coroutine ``process``)."""
+        component = self._components.get(node.component)
+        if not component:
+            raise FlowExecutionError(
+                f"Component not found for node '{node_id}': {node.component}"
+            )
+
+        elapsed = time.time() - flow_start_time
+        if self._settings.timeout_seconds:
+            remaining = self._settings.timeout_seconds - elapsed
+            if remaining <= 0:
+                raise FlowTimeoutError(
+                    f"Flow timeout exceeded: {elapsed:.2f}s > "
+                    f"{self._settings.timeout_seconds}s",
+                    timeout=self._settings.timeout_seconds,
+                    elapsed=elapsed,
+                    flow_id=context.metadata.flow_id,
+                    step=node_id,
+                )
+        else:
+            remaining = None
+
+        context.clear_port()
+        self._notify("on_node_start", node_id, node.component, context)
+
+        start_time = time.time()
+        step_started_at = datetime.now(UTC)
+
+        try:
+            if remaining is not None:
+                context.metadata.deadline = time.time() + remaining
+            else:
+                context.metadata.deadline = None
+            context.metadata.deadline_checked = False
+
+            component.setup(context)
+            try:
+                result = component.process(context)
+                if inspect.iscoroutine(result):
+                    result = await result
+                context = result
+            finally:
+                component.teardown(context)
+                context.metadata.deadline = None
+
+            node_elapsed = time.time() - start_time
+            context.metadata.record_timing(node.component, node_elapsed, step_started_at)
+            self._notify(
+                "on_node_complete", node_id, node.component, context, node_elapsed
+            )
+            logger.info(f"Completed node {node_id} in {node_elapsed:.3f}s")
+
+        except FlowTimeoutError:
+            node_elapsed = time.time() - start_time
+            context.metadata.record_timing(node.component, node_elapsed, step_started_at)
+            raise
+        except Exception as e:
+            node_elapsed = time.time() - start_time
+            context.metadata.record_timing(node.component, node_elapsed, step_started_at)
+            context.metadata.add_error(node.component, e)
+            self._notify("on_node_error", node_id, node.component, e, context)
+            logger.error(f"Error in node {node_id}: {e}")
+            if node.on_error == "fail" or self._settings.fail_fast:
+                raise ComponentError(
+                    component=node.component, message=str(e), original_error=e
+                ) from e
+            elif node.on_error == "skip":
+                context.metadata.skipped_components.append(node.component)
+        finally:
+            context.metadata.deadline = None
+            context.metadata.deadline_checked = False
+
+        return context
+
+    async def _execute_dag_async(self, context: FlowContext) -> FlowContext:
+        """Async twin of :meth:`_execute_dag`."""
+        flow_start_time = time.time()
+        order = self._topological_sort()
+        roots = set(self._find_roots())
+        activated: set[str] = set(roots)
+
+        for node_id in order:
+            node = self._nodes[node_id]
+            if node_id in context.metadata.completed_nodes:
+                activated.update(self._get_reachable_targets(node_id, None, context))
+                continue
+            if node_id not in activated:
+                logger.info(f"Skipping unreachable node: {node_id}")
+                context.metadata.skipped_components.append(node.component)
+                self._notify("on_node_skipped", node_id, node.component, "unreachable")
+                continue
+
+            context = await self._execute_node_async(
+                node_id, node, context, flow_start_time
+            )
+            if context.metadata.suspended:
+                self._notify(
+                    "on_flow_suspended", node_id,
+                    context.metadata.suspension_reason or "", None,
+                )
+                return context
+
+            context.metadata.completed_nodes.append(node_id)
+            active_port = context.get_active_port()
+            activated.update(
+                self._get_reachable_targets(node_id, active_port, context)
+            )
+        return context
+
+    async def _execute_cyclic_async(self, context: FlowContext) -> FlowContext:
+        """Async twin of :meth:`_execute_cyclic`."""
+        flow_start_time = time.time()
+        cycle_nodes = self._identify_cycle_nodes()
+        roots = self._find_roots_for_cyclic()
+        visit_counts: dict[str, int] = dict(context.metadata.node_visit_counts)
+        iteration = context.metadata.iteration_count
+
+        ready_queue: deque[str] = deque()
+        if context.metadata.suspended_at_node:
+            ready_queue.append(context.metadata.suspended_at_node)
+        else:
+            ready_queue.extend(roots)
+
+        iter_start: float | None = None
+        while ready_queue:
+            node_id = ready_queue.popleft()
+            node = self._nodes[node_id]
+
+            if visit_counts.get(node_id, 0) >= self._effective_max_visits(node_id):
+                continue
+
+            if node_id in self._back_edge_targets and visit_counts.get(node_id, 0) > 0:
+                iter_end = time.time()
+                self._notify(
+                    "on_iteration_complete", iteration, node_id, context,
+                    iter_end - (iter_start if iter_start else flow_start_time),
+                )
+                iteration += 1
+                context.metadata.iteration_count = iteration
+                iter_start = time.time()
+                self._notify("on_iteration_start", iteration, node_id, context)
+                if iteration > self._settings.max_iterations:
+                    self._handle_max_iterations(context, node_id, iteration)
+                    break
+
+            context = await self._execute_node_async(
+                node_id, node, context, flow_start_time
+            )
+            visit_counts[node_id] = visit_counts.get(node_id, 0) + 1
+            context.metadata.node_visit_counts = dict(visit_counts)
+
+            if context.metadata.suspended:
+                self._notify(
+                    "on_flow_suspended", node_id,
+                    context.metadata.suspension_reason or "", None,
+                )
+                return context
+
+            if node_id not in cycle_nodes:
+                context.metadata.completed_nodes.append(node_id)
+
+            active_port = context.get_active_port()
+            for target in self._get_reachable_targets(node_id, active_port, context):
+                ready_queue.append(target)
+
+        if iteration > 0 and not context.metadata.suspended:
+            iter_end = time.time()
+            entry_node = (
+                list(self._back_edge_targets)[0]
+                if self._back_edge_targets else roots[0]
+            )
+            self._notify(
+                "on_iteration_complete", iteration, entry_node, context,
+                iter_end - (iter_start if iter_start else flow_start_time),
+            )
         return context
 
     # ── Helper methods ──────────────────────────────────────────────────
@@ -403,7 +610,7 @@ class GraphExecutor:
         Raises:
             ConfigurationError: If cycle detected.
         """
-        in_degree: dict[str, int] = {nid: 0 for nid in self._nodes}
+        in_degree: dict[str, int] = dict.fromkeys(self._nodes, 0)
         for edge in self._edges:
             in_degree[edge.target] += 1
 
@@ -433,17 +640,21 @@ class GraphExecutor:
         return order
 
     def _get_reachable_targets(
-        self, node_id: str, active_port: str | None
+        self, node_id: str, active_port: str | None, context: FlowContext | None = None
     ) -> list[str]:
         """Given a node and its active port, return which downstream nodes to activate.
 
-        Rules:
-        - Edges with port=None always activate (unconditional)
+        Port rules:
+        - Edges with port=None always pass the port check (unconditional)
         - If node has port-specific edges and active_port is set:
-          only edges matching active_port activate (plus unconditional)
+          only edges matching active_port pass (plus unconditional)
         - If node has port-specific edges but no active_port:
-          only unconditional edges activate
-        - If node has no port-specific edges: all outgoing edges activate
+          only unconditional edges pass
+        - If node has no port-specific edges: all outgoing edges pass
+
+        Condition rule (applied after the port check): an edge with a
+        ``condition`` expression activates only if it evaluates True against
+        ``context``. Evaluation errors follow ``settings.on_condition_error``.
         """
         outgoing = self._forward.get(node_id, [])
         if not outgoing:
@@ -454,17 +665,46 @@ class GraphExecutor:
         targets: list[str] = []
         for edge in outgoing:
             if edge.port is None:
-                # Unconditional edge always activates
-                targets.append(edge.target)
+                port_ok = True
             elif has_port_edges and active_port is not None:
-                # Port-specific edge: only if matching active_port
-                if edge.port == active_port:
-                    targets.append(edge.target)
+                port_ok = edge.port == active_port
             elif not has_port_edges:
-                # No port edges at all — everything activates
+                port_ok = True
+            else:
+                port_ok = False
+            if port_ok and self._edge_condition_ok(edge, context):
                 targets.append(edge.target)
 
         return targets
+
+    def _edge_condition_ok(
+        self, edge: GraphEdgeConfig, context: FlowContext | None
+    ) -> bool:
+        """Evaluate an edge's condition expression (True if no condition).
+
+        Errors are handled per ``settings.on_condition_error``:
+        ``fail`` re-raises, ``skip``/``warn`` treat the edge as inactive
+        (``warn`` also logs and records the error).
+        """
+        if not edge.condition:
+            return True
+        if context is None:
+            return True
+        try:
+            return self._evaluator.evaluate(edge.condition, context)
+        except ConditionEvaluationError as exc:
+            policy = self._settings.on_condition_error
+            if policy == "fail":
+                raise
+            context.metadata.add_condition_error(
+                f"{edge.source}->{edge.target}", exc, edge.condition
+            )
+            if policy == "warn":
+                logger.warning(
+                    "Edge condition error %s->%s: %s (treating edge as inactive)",
+                    edge.source, edge.target, exc,
+                )
+            return False
 
     def _detect_cycles(self) -> tuple[bool, set[tuple[str, str]]]:
         """Detect cycles and identify back-edges using DFS.

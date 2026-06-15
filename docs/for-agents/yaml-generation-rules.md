@@ -38,7 +38,12 @@ Each field: `{type, required, description, default}`.
 ## Graph rules
 
 - Each node: `{id, component, on_error?, max_visits?}`. `id` is unique.
-- Each edge: `{source, target, port?}`. `port: null` is an unconditional edge.
+- Each edge: `{source, target, port?, condition?}`. `port: null` is
+  port-unconditional; `condition: null` is condition-unconditional. An edge
+  activates only when its **port matches** the source's active port **and** its
+  **`condition`** (a safe Python expression over `context`, e.g.
+  `context.data.score > 0.5`) evaluates true. Condition errors follow
+  `settings.on_condition_error`.
 - Root nodes (no incoming edge) are entry points and always run.
 - A node is skipped if no incoming edge activated it.
 - Cyclic graphs **must** set `settings.max_iterations` (1–1000) and should set
